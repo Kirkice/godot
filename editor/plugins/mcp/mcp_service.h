@@ -61,6 +61,8 @@ public:
 	int port = 0;
 	State state = STATE_DISABLED;
 	int request_count = 0;
+	String transaction_id;
+	String transaction_label;
 
 	void _append_activity(const String &p_message);
 	void _append_audit(const String &p_method, const String &p_outcome, const String &p_detail);

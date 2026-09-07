@@ -80,6 +80,7 @@ class MCPControlCenter : public EditorDock {
 	Label *tool_risk = nullptr;
 	TextEdit *tool_schema = nullptr;
 	TextEdit *activity_log = nullptr;
+	CheckBox *confirmation_required = nullptr;
 
 	Vector<ToolInfo> tools;
 	MCPService *service = nullptr;
@@ -111,6 +112,7 @@ class MCPControlCenter : public EditorDock {
 	void _copy_endpoint();
 	void _copy_token();
 	void _regenerate_token();
+	void _confirmation_toggled(bool p_pressed);
 
 protected:
 	void _notification(int p_what);

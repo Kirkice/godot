@@ -31,6 +31,7 @@
 
 #include "core/io/json.h"
 #include "core/os/time.h"
+#include "core/string/print_string.h"
 
 namespace {
 constexpr int MAX_REQUEST_SIZE = 1024 * 1024;
@@ -93,6 +94,27 @@ Array MCPService::_get_tools() const {
 	tool["description"] = "Returns the state of the built-in Godot MCP server.";
 	tool["inputSchema"] = input_schema;
 	tools.push_back(tool);
+	tools.push_back(Dictionary());
+	Dictionary transaction_begin;
+	transaction_begin["name"] = "godot.transaction.begin";
+	transaction_begin["description"] = "Starts a named MCP transaction shell.";
+	transaction_begin["inputSchema"] = input_schema;
+	tools[1] = transaction_begin;
+	Dictionary transaction_commit;
+	transaction_commit["name"] = "godot.transaction.commit";
+	transaction_commit["description"] = "Commits the active MCP transaction shell.";
+	transaction_commit["inputSchema"] = input_schema;
+	tools.push_back(transaction_commit);
+	Dictionary transaction_rollback;
+	transaction_rollback["name"] = "godot.transaction.rollback";
+	transaction_rollback["description"] = "Rolls back the active MCP transaction shell.";
+	transaction_rollback["inputSchema"] = input_schema;
+	tools.push_back(transaction_rollback);
+	Dictionary audit_export;
+	audit_export["name"] = "godot.audit.export";
+	audit_export["description"] = "Returns the in-memory MCP audit entries without authentication secrets.";
+	audit_export["inputSchema"] = input_schema;
+	tools.push_back(audit_export);
 	return tools;
 }
 
@@ -101,6 +123,10 @@ Dictionary MCPService::_make_status_result() const {
 	result["state"] = is_running() ? "running" : "disabled";
 	result["endpoint"] = get_endpoint();
 	result["requests"] = request_count;
+	result["audit_entries"] = audit_entries.size();
+	result["transaction_active"] = !transaction_id.is_empty();
+	result["transaction_id"] = transaction_id;
+	result["transaction_label"] = transaction_label;
 	result["transport"] = "streamable-http";
 	result["bind_address"] = bind_address;
 	result["port"] = port;
@@ -144,6 +170,62 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 		response["id"] = request_id;
 		response["result"] = result;
 		_append_activity("MCP tools/list completed.");
+		return response;
+	}
+
+	if (method == "godot.transaction.begin") {
+		if (!transaction_id.is_empty()) {
+			return _make_error(request_id, -32010, "A transaction is already active.");
+		}
+		const Dictionary params = p_request.get("params", Dictionary());
+		transaction_label = params.get("label", "MCP transaction");
+		transaction_id = vformat("txn-%d", Time::get_singleton()->get_ticks_msec());
+		_append_audit(method, "started", transaction_id);
+		Dictionary result;
+		result["transactionId"] = transaction_id;
+		result["label"] = transaction_label;
+		Dictionary response;
+		response["jsonrpc"] = jsonrpc_version();
+		response["id"] = request_id;
+		response["result"] = result;
+		return response;
+	}
+
+	if (method == "godot.transaction.commit" || method == "godot.transaction.rollback") {
+		if (transaction_id.is_empty()) {
+			return _make_error(request_id, -32011, "No active transaction.");
+		}
+		const String completed_id = transaction_id;
+		const String outcome = method == "godot.transaction.commit" ? "committed" : "rolled_back";
+		_append_audit(method, outcome, completed_id);
+		transaction_id.clear();
+		transaction_label.clear();
+		Dictionary result;
+		result["transactionId"] = completed_id;
+		result["outcome"] = outcome;
+		Dictionary response;
+		response["jsonrpc"] = jsonrpc_version();
+		response["id"] = request_id;
+		response["result"] = result;
+		return response;
+	}
+
+	if (method == "godot.audit.export") {
+		Array entries;
+		for (const AuditEntry &entry : audit_entries) {
+			Dictionary item;
+			item["timestamp"] = entry.timestamp;
+			item["method"] = entry.method;
+			item["outcome"] = entry.outcome;
+			item["detail"] = entry.detail;
+			entries.push_back(item);
+		}
+		Dictionary result;
+		result["entries"] = entries;
+		Dictionary response;
+		response["jsonrpc"] = jsonrpc_version();
+		response["id"] = request_id;
+		response["result"] = result;
 		return response;
 	}
 
@@ -233,8 +315,9 @@ void MCPService::_handle_request(const String &p_request) {
 	}
 
 	request_count++;
-	const Dictionary rpc_response = _handle_rpc(json.get_data());
-	_append_audit(json.get_data().get("method", ""), "completed", "Request completed.");
+	const Dictionary request_dictionary = json.get_data();
+	const Dictionary rpc_response = _handle_rpc(request_dictionary);
+	_append_audit(request_dictionary.get("method", ""), "completed", "Request completed.");
 	_send_response(200, rpc_response);
 }
 

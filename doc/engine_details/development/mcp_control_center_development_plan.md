@@ -518,3 +518,8 @@ initialize / tools/list / godot.editor.status
 - [x] **P0-08**：实现本机 Streamable HTTP 风格 JSON-RPC 端点 `POST /mcp`、Bearer Token 认证、`initialize`、`tools/list` 和 `tools/call(godot.editor.status)`。验证：在 `http://127.0.0.1:30100/mcp` 获得三项 HTTP 200 JSON-RPC 响应；无效 Token 返回 HTTP 401。
 - [x] **Build-01**：执行 `build_windows_editor.bat --mcp-bridge`，SCons 构建与 `--version` 验证均以退出码 0 完成；随后启动 MCP-enabled 编辑器，进程 PID 为 `35860`。
 - [x] **Build-02**：Phase 0B 最终构建 `build_windows_editor.bat --mcp-bridge` 成功；打开 `user_temp/godot_learn` 后监听 `127.0.0.1:30100` 并完成 MCP 协议验证。
+- [x] **P0-07-build**：主题访问过早修复已编译通过；MCP 编辑器启动后保持运行，服务监听 `127.0.0.1:30100`，`godot.editor.status` 请求返回 HTTP 200。主题/缩放完整人工矩阵仍保留在 P0-07 验收项中。
+- [x] **P1-audit-foundation**：`MCPService` 增加最多 100 条内存审计条目，记录认证拒绝和已完成 JSON-RPC 方法，详情不包含 Token 明文；已完成构建验证。
+- [x] **P1-transaction-shell**：发布 `godot.transaction.begin`、`godot.transaction.commit`、`godot.transaction.rollback`；支持单活动事务、重复 begin/无活动 commit 错误、状态工具可见事务信息，并完成 HTTP 协议验证。
+- [x] **P1-confirmation-ui**：Control Center 增加 `Require confirmation for write tools` 设置，持久化到 EditorSettings，并将用户切换记录到 Activity；`mcp_bridge` 构建通过，服务状态 HTTP 200 验证通过。
+- [x] **P1-audit-export**：新增 `godot.audit.export`，仅导出内存审计字段（时间、方法、结果、脱敏详情），不导出 Token；构建通过并完成 HTTP 200 验证。

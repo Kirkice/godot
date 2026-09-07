@@ -60,6 +60,7 @@ constexpr const char *SETTING_PORT = "mcp/bridge/port";
 constexpr const char *SETTING_AUTO_PORT = "mcp/bridge/auto_select_port";
 constexpr const char *SETTING_START_WITH_EDITOR = "mcp/bridge/start_with_editor";
 constexpr const char *SETTING_TOKEN = "mcp/bridge/token";
+constexpr const char *SETTING_CONFIRMATION = "mcp/bridge/require_confirmation";
 
 Label *create_section_title(const String &p_text) {
 	Label *label = memnew(Label);
@@ -106,6 +107,7 @@ void MCPControlCenter::_register_settings() {
 		editor_settings->set_initial_value(SETTING_AUTO_PORT, true);
 		editor_settings->set_initial_value(SETTING_START_WITH_EDITOR, false);
 		editor_settings->set_initial_value(SETTING_TOKEN, "");
+		editor_settings->set_initial_value(SETTING_CONFIRMATION, true);
 	}
 }
 
@@ -116,6 +118,7 @@ void MCPControlCenter::_load_settings() {
 	port->set_value(editor_settings->get(SETTING_PORT));
 	auto_select_port->set_pressed(editor_settings->get(SETTING_AUTO_PORT));
 	start_with_editor->set_pressed(editor_settings->get(SETTING_START_WITH_EDITOR));
+	confirmation_required->set_pressed(editor_settings->get(SETTING_CONFIRMATION));
 
 	String saved_token = editor_settings->get(SETTING_TOKEN);
 	if (saved_token.is_empty()) {
@@ -140,6 +143,7 @@ void MCPControlCenter::_save_settings() {
 	editor_settings->set(SETTING_PORT, (int)port->get_value());
 	editor_settings->set(SETTING_AUTO_PORT, auto_select_port->is_pressed());
 	editor_settings->set(SETTING_START_WITH_EDITOR, start_with_editor->is_pressed());
+	editor_settings->set(SETTING_CONFIRMATION, confirmation_required->is_pressed());
 	editor_settings->set(SETTING_TOKEN, token->get_text());
 }
 
@@ -305,6 +309,11 @@ void MCPControlCenter::_start_with_editor_toggled(bool p_pressed) {
 	_save_settings();
 }
 
+void MCPControlCenter::_confirmation_toggled(bool p_pressed) {
+	_save_settings();
+	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), p_pressed ? TTR("Confirmation required for write tools.") : TTR("Confirmation requirement disabled.")));
+}
+
 void MCPControlCenter::_tool_search_changed(const String &p_text) {
 	_rebuild_tool_tree();
 }
@@ -431,6 +440,11 @@ MCPControlCenter::MCPControlCenter() {
 	start_with_editor->set_text(TTR("Start MCP server with editor"));
 	start_with_editor->connect(SceneStringName(toggled), callable_mp(this, &MCPControlCenter::_start_with_editor_toggled));
 	server_box->add_child(start_with_editor);
+
+	confirmation_required = memnew(CheckBox);
+	confirmation_required->set_text(TTR("Require confirmation for write tools"));
+	confirmation_required->connect(SceneStringName(toggled), callable_mp(this, &MCPControlCenter::_confirmation_toggled));
+	server_box->add_child(confirmation_required);
 
 	server_box->add_child(memnew(HSeparator));
 	server_box->add_child(create_field_label(TTR("Endpoint")));
