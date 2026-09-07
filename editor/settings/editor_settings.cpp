@@ -523,6 +523,21 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 		EDITOR_SETTING_BASIC(Variant::INT, PROPERTY_HINT_ENUM, "network/connection/check_for_updates", EngineUpdateLabel::UpdateMode::AUTO, update_hint);
 	}
 
+#ifdef MCP_BRIDGE_ENABLED
+	EDITOR_SETTING(Variant::BOOL, PROPERTY_HINT_NONE, "mcp/bridge/enabled", false, "")
+	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_NONE, "mcp/bridge/bind_address", "127.0.0.1", "")
+	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "mcp/bridge/port", 0, "0,65535,1")
+	EDITOR_SETTING(Variant::BOOL, PROPERTY_HINT_NONE, "mcp/bridge/auto_select_port", true, "")
+	EDITOR_SETTING(Variant::BOOL, PROPERTY_HINT_NONE, "mcp/bridge/start_with_editor", false, "")
+	// Token 由 Control Center 在首次使用时生成。使用局部初始值避免默认注册覆盖已加载值。
+	if (!has_setting("mcp/bridge/token")) {
+		set_manually("mcp/bridge/token", "");
+		props["mcp/bridge/token"].initial = "";
+		props["mcp/bridge/token"].has_default_value = true;
+	}
+	hints["mcp/bridge/token"] = PropertyInfo(Variant::STRING, "mcp/bridge/token", PROPERTY_HINT_NONE, "");
+#endif
+
 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/use_embedded_menu", false, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_BASIC_SETTING)
 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/use_native_file_dialogs", false, "", PROPERTY_USAGE_DEFAULT)
 	EDITOR_SETTING_USAGE(Variant::BOOL, PROPERTY_HINT_NONE, "interface/editor/appearance/expand_to_title", true, "", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_RESTART_IF_CHANGED | PROPERTY_USAGE_EDITOR_BASIC_SETTING)

@@ -60,6 +60,9 @@
 #include "editor/doc/editor_help.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/docks/filesystem_dock.h"
+#ifdef MCP_BRIDGE_ENABLED
+#include "editor/plugins/mcp/mcp_editor_plugin.h"
+#endif
 #include "editor/docks/groups_dock.h"
 #include "editor/docks/history_dock.h"
 #include "editor/docks/import_dock.h"
@@ -9513,6 +9516,10 @@ EditorNode::EditorNode() {
 	add_editor_plugin(VersionControlEditorPlugin::get_singleton());
 
 	add_editor_plugin(memnew(AudioBusesEditorPlugin(audio_bus_editor)));
+
+#ifdef MCP_BRIDGE_ENABLED
+	add_editor_plugin(memnew(MCPBridgeEditorPlugin));
+#endif
 
 	for (int i = 0; i < EditorPlugins::get_plugin_count(); i++) {
 		add_editor_plugin(EditorPlugins::create(i));

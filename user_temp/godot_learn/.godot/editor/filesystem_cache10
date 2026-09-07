@@ -1,4 +1,6 @@
 6d3b77f294a95ad2bb592a87da89201d
-::res://::1788710232
-icon.svg::CompressedTexture2D::9118244302068510825::1788688492::1788688506::1::::<><><>0<>0<>60cd7ba5bbee407303ed4cbd06ac6ee8<>res://.godot/imported/icon.svg-218a8f2b3041327d8a5756f3a245f83b.ctex::
-node_3d.tscn::PackedScene::6297741208723158136::1788688801::0::1::::<><><>0<>0<><>::
+::res://::1788774666
+icon.svg::CompressedTexture2D::9118244302068510825::1788752693::1788752693::1::::<><><>0<>0<>60cd7ba5bbee407303ed4cbd06ac6ee8<>res://.godot/imported/icon.svg-218a8f2b3041327d8a5756f3a245f83b.ctex::
+Lit.tres::StandardMaterial3D::4232698678982774405::1788752693::0::1::::<><><>0<>0<><>::
+node_3d.tscn::PackedScene::6297741208723158136::1788764982::0::1::::<><><>0<>0<><>::uid://c2dvd1g81fwyw::::res://StylizedLit.gdshader
+StylizedLit.gdshader::Shader::6675415069515332998::1788764982::0::1::::<><><>0<>0<><>::

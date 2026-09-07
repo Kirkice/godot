@@ -5,12 +5,12 @@
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_a0tk4"]
 render_priority = 0
 shader = ExtResource("1_a202f")
-shader_parameter/base_color = Color(0.12, 0.35, 0.9, 1)
+shader_parameter/base_color = Color(1, 1, 1, 1)
 shader_parameter/roughness = 0.249999994412
-shader_parameter/metallic = 0.20999999530608
-shader_parameter/rim_color = Color(0.1, 0.65, 1, 1)
+shader_parameter/metallic = 0.0999999977648
+shader_parameter/rim_color = Color(1, 1, 1, 1)
 shader_parameter/rim_power = 3.90000005066408
-shader_parameter/rim_intensity = 6.45000009611274
+shader_parameter/rim_intensity = 4.60000006854552
 
 [sub_resource type="SphereMesh" id="SphereMesh_yrx3n"]
 material = SubResource("ShaderMaterial_a0tk4")
@@ -22,7 +22,6 @@ mesh = SubResource("SphereMesh_yrx3n")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=992985269]
 transform = Transform3D(1, 0, 0, 0, 0.888576, 0.45872948, 0, -0.45872948, 0.888576, 0, 4.275191, 3.2307405)
-light_color = Color(1, 0, 0.33401585, 1)
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=35423392]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1.3982618)

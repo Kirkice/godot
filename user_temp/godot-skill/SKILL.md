@@ -19,6 +19,7 @@ Windows 10 与 Windows 11 均可使用。除非构建目标、依赖安装或用
 4. 缺少 AccessKit 或 D3D12 依赖时，安装依赖而非直接禁用相关功能。
 5. **先确认源码根目录。** 若用户的对话或当前工作区没有明确给出 Godot 源码路径，必须先询问用户；不得推测、硬编码或使用任何绝对路径。
 6. 获取源码根目录后，所有命令均以该目录作为工作目录运行；下文命令只使用相对路径。
+7. 每次用户要求构建引擎时，先询问是否还需要生成 Visual Studio 解决方案（`.sln`）。用户确认需要时，构建引擎后使用相同目标参数运行 `vsproj=yes` 生成解决方案；用户已在本次请求中明确需要时，无需重复询问。
 
 ## 1. 检查并安装 SCons
 
@@ -71,7 +72,21 @@ py misc\scripts\install_d3d12_sdk_windows.py
 
 ## 4. 构建 Vulkan/RD 开发编辑器
 
-在已确认的源码根目录运行，并将 `<VS_INSTALL_PATH>` 替换为第 2 步发现的路径：
+如果源码根目录存在 `build_windows_editor.bat`，优先使用它。每次用户要求构建时，先询问是否需要同步生成 Visual Studio 解决方案；用户明确需要时运行：
+
+```bat
+build_windows_editor.bat --with-vsproj
+```
+
+仅构建和验证编辑器时运行：
+
+```bat
+build_windows_editor.bat
+```
+
+此脚本从自身位置确定源码根目录，并用 `vswhere.exe` 自动发现 Visual Studio，因此不包含硬编码绝对路径。仍须检查退出码、版本验证输出和（如适用）`godot.sln` 是否存在。
+
+若该脚本不存在，或用户明确要求手动执行命令，则在已确认的源码根目录运行，并将 `<VS_INSTALL_PATH>` 替换为第 2 步发现的路径：
 
 ```bat
 call "<VS_INSTALL_PATH>\VC\Auxiliary\Build\vcvars64.bat" >nul && py -m SCons platform=windows target=editor dev_build=yes opengl3=no -j%NUMBER_OF_PROCESSORS%
@@ -87,7 +102,19 @@ call "<VS_INSTALL_PATH>\VC\Auxiliary\Build\vcvars64.bat" >nul && py -m SCons pla
 
 若输出 `'.' is up to date`，表示增量构建已成功确认目标为最新状态。
 
-## 5. 验证构建产物
+## 5. 生成 Visual Studio 解决方案（可选）
+
+Godot 的主构建系统是 SCons；`.sln` 由 SCons 的 `vsproj=yes` 选项生成，Visual Studio 可将它用于代码导航、编辑和调试。每次用户要求构建编辑器时，先询问是否需要同时生成解决方案；如果用户确认需要，或其当前请求已明确要求，应在引擎构建成功后，以**完全一致的构建目标参数**执行下列命令：
+
+```bat
+call "<VS_INSTALL_PATH>\VC\Auxiliary\Build\vcvars64.bat" >nul && py -m SCons platform=windows target=editor dev_build=yes opengl3=no vsproj=yes
+```
+
+`vsproj=yes` 应与第 4 步的 `platform`、`target`、`dev_build` 和渲染器选项保持一致，否则方案的配置可能与现有二进制不匹配。此命令生成的 `.sln` 和 `.vcxproj` 位于源码根目录。生成后确认源码根目录中存在 `.sln` 文件，再将其交给 Visual Studio 打开。
+
+不要把 Visual Studio 的“生成解决方案”作为替代 SCons 引擎构建的方式；日常正式编译仍使用第 4 步的 SCons 命令。可在 VS 中将 `bin\godot.windows.editor.dev.x86_64.exe` 配为启动程序，并把源码根目录设为工作目录，以便调试。
+
+## 6. 验证构建产物
 
 预期二进制：
 
@@ -102,7 +129,7 @@ bin\godot.windows.editor.dev.x86_64.console.exe --version
 
 命令应输出 Godot 版本字符串并以退出码 0 返回。
 
-## 6. 启动引擎编辑器
+## 7. 启动引擎编辑器
 
 在已确认的源码根目录异步启动：
 
@@ -114,7 +141,7 @@ start "Godot Engine Dev Build" /D "%CD%" "bin\godot.windows.editor.dev.x86_64.ex
 
 ## 日常增量构建
 
-修改 C++、RD shader 或生成代码后，重复第 4 步。普通实现文件改动通常只重编译受影响对象；修改 RenderingDevice API、渲染公共头文件或 shader 生成基础设施时，可能产生较大规模重编译。
+修改 C++、RD shader 或生成代码后，重复第 4 步。若用户要求更新 Visual Studio 方案，则在引擎构建成功后重复第 5 步的 `vsproj=yes` 命令。普通实现文件改动通常只重编译受影响对象；修改 RenderingDevice API、渲染公共头文件或 shader 生成基础设施时，可能产生较大规模重编译。
 
 ## 常见问题
 

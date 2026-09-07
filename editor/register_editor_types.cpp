@@ -116,6 +116,9 @@
 #include "editor/scene/gui/theme_editor_plugin.h"
 #include "editor/scene/gui/virtual_joystick_editor_plugin.h"
 #include "editor/scene/material_editor_plugin.h"
+#ifdef MCP_BRIDGE_ENABLED
+#include "editor/plugins/mcp/mcp_editor_plugin.h"
+#endif
 #include "editor/scene/packed_scene_editor_plugin.h"
 #include "editor/scene/resource_preloader_editor_plugin.h"
 #include "editor/scene/sprite_frames_editor_plugin.h"
