@@ -528,4 +528,27 @@ initialize / tools/list / godot.editor.status
 - [x] **P1-confirmation-migration**：为旧 EditorSettings 增加一次性安全迁移；未初始化的确认策略强制默认开启并持久化 `confirmation_initialized=true`。验证：旧值 false 启动后迁移为 true，写入工具返回 -32020，status 显示 pending_confirmation=true，reject 返回 HTTP 200。
 - [x] **P1-scene-validation**：`godot.scene.create` 接入批准后的一次性执行授权和输入校验；仅接受 `res://` 下 `.tscn` 路径与非空 root_type，非法路径返回 -32602，合法请求返回 accepted 与事务状态；尚未写入磁盘场景文件。
 - [x] **P0-07-layout-redesign**：参考调试器工作区重构 MCP 面板：Server & Connection、Tools、Tool Details、Activity & Audit 四个区域按横向/纵向 SplitContainer 组织，分隔条可调；构建成功，编辑器启动并监听 `127.0.0.1:30100`，status 返回 HTTP 200。
-- [x] **P0-07-visual-style**：为四个工作区增加与调试器接近的深色背景、低对比边框、紧凑内边距、主题色标题和状态层级；Tools 改为双列 Tree，显示 Tool/State、分类层级、状态底色和悬浮说明；构建成功，编辑器启动并监听 `127.0.0.1:30100`，status 返回 HTTP 200。仍需人工截图确认最终观感。
+- [x] **P0-07-visual-style**：为四个工作区增加与调试器接近的深色背景、低对比边框、紧凑内边距、主题色标题和状态层级；Tools 改为双列 Tree，显示 Tool/State、分类层级、状态底色和悬浮说明；构建成功，编辑器启动并监听 `127.0.0.1:30100`，status 返回 HTTP 200。已完成人工验收，背景色确认使用 RGB(31,31,31)。
+- [x] **P2-scene-create**：`godot.scene.create` 完成真实 PackedScene 创建和保存；通过 ClassDB 实例化受控 Node 类型、ResourceSaver 保存 `res://` `.tscn`，扫描 EditorFileSystem；验证生成 `user_temp/godot_learn/mcp_real_scene.tscn` 并返回 created=true。
+- [x] **P2-scene-safety**：场景根类型收紧为 `Node`、`Node2D`、`Node3D`、`Control` 白名单，确认授权使用本次 tools/call 的 `has_approval` 状态，避免批准标记被提前清除；非法 `EditorNode` 请求返回 -32602。
+- [x] **P2-transaction-rollback**：事务记录由其创建的场景路径；`godot.transaction.rollback` 删除事务内新建场景并刷新 EditorFileSystem，commit 保留文件；验证 begin → scene.create → rollback 返回 rolled_back 且 `mcp_txn_scene.tscn` 不存在。
+- [x] **P2-resource-create**：新增 `godot.resource.create`，白名单支持 `Resource`、`Curve`、`Gradient`，仅允许 `res://` 下 `.tres/.res` 保存，事务 rollback 删除新资源；验证生成 `mcp_gradient.tres` 并返回 created=true。
+- [x] **Build-protocol-smoke**：新增 `editor/plugins/mcp/mcp_protocol_smoke_test.ps1`，自动验证 status、tools/list、未知工具、非法 scene/resource 路径、无效 Token HTTP 401、事务 begin/commit、审计导出及 Token 脱敏；启动 MCP-enabled 编辑器后输出 `MCP protocol smoke test passed: status, registry, validation, auth, transaction, audit.`。
+- [x] **P2-transaction-multi-file**：事务由单场景/资源路径扩展为 `transaction_created_files` 列表，支持同一事务创建多个场景和资源并统一 rollback；status 显示文件数 2，rollback 返回 rolled_back，验证生成文件被删除。
+- [x] **P2-run-current-scene**：实现 `godot.run.current_scene`，接入 `EditorInterface::play_current_scene()`，返回当前场景路径和 started 状态，运行中重复调用返回 -32032；协议调用验证返回 started=true。
+- [x] **P2-scene-add-node**：实现 `godot.scene.add_node`，受控加载 PackedScene、校验父节点路径与 Node 类型白名单、添加子节点并保存；验证 `ChildFromMCP` 写入 `mcp_real_scene.tscn`。
+- [x] **P2-run-stop**：实现 `godot.run.stop`，接入 `EditorInterface::stop_playing_scene()`，无运行场景返回 -32035，并加入 smoke test。
+- [x] **P2-scene-remove-node**：实现 `godot.scene.remove_node`，校验 `res://` 场景与非根节点路径，删除节点后重新打包保存并刷新文件系统；验证添加 `RemoveMe` 后按相对路径删除成功。
+- [x] **P2-scene-rename-node**：实现 `godot.scene.rename_node`，校验非根节点和无斜杠新名称，重命名后重新打包保存并刷新文件系统；验证 `RenameMe` → `RenamedByMCP` 成功。
+- [x] **P2-transaction-snapshot**：事务记录每个文件首次变更前的存在状态和字节快照；新文件 rollback 删除，已有文件 rollback 恢复原始内容；场景编辑工具统一登记事务文件，smoke test 通过。
+- [x] **P2-transaction-commit-verify**：commit 增加 files_committed 审计事件；smoke test 创建场景和资源后 commit，并确认两个文件仍存在；rollback 恢复失败会记录 restore_failed。
+- [x] **P2-audit-clear**：新增 `godot.audit.clear`，返回清理前数量并清空内存审计记录；加入 smoke test，确认 clear 返回 `cleared=true`。
+- [x] **P2-overwrite-protection**：场景和资源创建默认拒绝覆盖已有文件，需显式 `allow_overwrite=true`；已有文件覆盖前由事务快照保护，非法覆盖返回 -32036，smoke test 已覆盖。
+- [x] **P2-scene-reparent-node**：实现 `godot.scene.reparent_node`，校验节点和新父节点路径，禁止循环挂载，设置 owner 后重新打包保存；验证 `ChildA` 移动到 `ParentA` 成功。
+- [x] **P2-resource-properties**：`godot.resource.create` 支持 Gradient `colors` 数组（RGB/RGBA）和 Curve `points` 数组（Vector2），完成类型校验并保存；验证红蓝 Gradient 返回 created=true，smoke test 已覆盖。
+- [x] **P2-transaction-stop-cleanup**：编辑器停止 MCP 服务时清理活动事务状态并记录 `aborted_on_stop` 审计，避免残留事务跨服务生命周期；正常 commit/rollback smoke test 通过。
+- [x] **P2-confirmation-expiry**：确认请求记录创建时间，超过 60 秒 approve/reject 返回 -32023 并记录 `expired` 审计；服务停止时清理 pending/approved 状态，正常确认回归通过。
+- [x] **P2-run-status-reporting**：`godot.run.stop` 返回被停止的场景路径，status 暴露确认超时秒数；smoke test 保持运行/停止回归通过。
+- [x] **P2-confirmation-regression**：smoke test 增加无效 confirmation ID 返回 -32021 验证，覆盖确认协议的非法输入路径。
+- [x] **P2-resource-confirmation**：资源创建与场景创建统一执行确认策略，未批准返回 -32020；资源成功创建后登记事务快照，修复多文件 rollback 计数回归。
+- [x] **P2-reparent-transaction-regression**：修复重新挂载节点的 owner 一致性与脱树路径错误；将 reparent 场景修改延后登记事务快照；smoke test 使用真实层级路径验证事务登记与 rollback。

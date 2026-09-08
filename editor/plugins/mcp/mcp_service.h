@@ -50,6 +50,12 @@ public:
 		bool requires_confirmation = false;
 	};
 
+	struct TransactionFile {
+		String path;
+		PackedByteArray backup_data;
+		bool existed = false;
+	};
+
 	struct AuditEntry {
 		String timestamp;
 		String method;
@@ -73,9 +79,14 @@ public:
 	String transaction_id;
 	String transaction_label;
 	bool require_confirmation = true;
+	uint64_t connection_generation = 0;
+	uint64_t transaction_connection_generation = 0;
 	String pending_confirmation_id;
 	String pending_confirmation_tool;
+	uint64_t pending_confirmation_started_msec = 0;
 	String approved_confirmation_tool;
+	Vector<String> transaction_created_files;
+	Vector<TransactionFile> transaction_files;
 
 	void _append_activity(const String &p_message);
 	void _append_audit(const String &p_method, const String &p_outcome, const String &p_detail);
@@ -86,6 +97,7 @@ public:
 	Dictionary _make_status_result() const;
 	Array _get_tools() const;
 	const ToolDefinition *_find_tool(const String &p_name) const;
+	void _track_transaction_file(const String &p_path);
 	void _clear_client();
 
 protected:
@@ -102,6 +114,7 @@ public:
 	String get_activity() const { return activity; }
 	int get_request_count() const { return request_count; }
 	Vector<AuditEntry> get_audit_entries() const { return audit_entries; }
+	void clear_audit_entries() { audit_entries.clear(); }
 	bool has_pending_confirmation() const { return !pending_confirmation_id.is_empty(); }
 	String get_pending_confirmation_id() const { return pending_confirmation_id; }
 	String get_pending_confirmation_tool() const { return pending_confirmation_tool; }

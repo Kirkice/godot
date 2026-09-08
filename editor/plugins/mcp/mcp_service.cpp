@@ -30,8 +30,19 @@
 #include "mcp_service.h"
 
 #include "core/io/json.h"
+#include "core/object/class_db.h"
+#include "core/io/resource_saver.h"
+#include "core/io/resource_loader.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
+#include "core/config/project_settings.h"
 #include "core/os/time.h"
 #include "core/string/print_string.h"
+#include "editor/file_system/editor_file_system.h"
+#include "editor/editor_interface.h"
+#include "scene/resources/packed_scene.h"
+#include "scene/resources/curve.h"
+#include "scene/resources/gradient.h"
 
 namespace {
 constexpr int MAX_REQUEST_SIZE = 1024 * 1024;
@@ -42,6 +53,28 @@ String jsonrpc_version() {
 } // namespace
 
 void MCPService::_bind_methods() {
+}
+
+void MCPService::_track_transaction_file(const String &p_path) {
+	if (transaction_id.is_empty()) {
+		return;
+	}
+	for (const TransactionFile &file : transaction_files) {
+		if (file.path == p_path) {
+			return;
+		}
+	}
+	TransactionFile file;
+	file.path = p_path;
+	const String absolute_path = ProjectSettings::get_singleton()->globalize_path(p_path);
+	file.existed = FileAccess::exists(absolute_path);
+	if (file.existed) {
+		file.backup_data = FileAccess::get_file_as_bytes(absolute_path);
+	}
+	transaction_files.push_back(file);
+	if (!transaction_created_files.has(p_path)) {
+		transaction_created_files.push_back(p_path);
+	}
 }
 
 const MCPService::ToolDefinition *MCPService::_find_tool(const String &p_name) const {
@@ -136,6 +169,11 @@ Array MCPService::_get_tools() const {
 	transaction_rollback["inputSchema"] = input_schema;
 	tools.push_back(transaction_rollback);
 
+	Dictionary audit_clear;
+	audit_clear["name"] = "godot.audit.clear";
+	audit_clear["description"] = "Clears the in-memory MCP audit entries.";
+	audit_clear["inputSchema"] = input_schema;
+	tools.push_back(audit_clear);
 	Dictionary audit_export;
 	audit_export["name"] = "godot.audit.export";
 	audit_export["description"] = "Returns the in-memory MCP audit entries without authentication secrets.";
@@ -153,10 +191,12 @@ Dictionary MCPService::_make_status_result() const {
 	result["transaction_active"] = !transaction_id.is_empty();
 	result["transaction_id"] = transaction_id;
 	result["transaction_label"] = transaction_label;
+	result["transaction_created_files"] = transaction_created_files.size();
 	result["require_confirmation"] = require_confirmation;
 	result["pending_confirmation"] = !pending_confirmation_id.is_empty();
 	result["pending_confirmation_id"] = pending_confirmation_id;
 	result["pending_confirmation_tool"] = pending_confirmation_tool;
+	result["confirmation_timeout_seconds"] = 60;
 	result["transport"] = "streamable-http";
 	result["bind_address"] = bind_address;
 	result["port"] = port;
@@ -210,6 +250,9 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 		const Dictionary params = p_request.get("params", Dictionary());
 		transaction_label = params.get("label", "MCP transaction");
 		transaction_id = vformat("txn-%d", Time::get_singleton()->get_ticks_msec());
+		transaction_connection_generation = connection_generation;
+		transaction_created_files.clear();
+		transaction_files.clear();
 		_append_audit(method, "started", transaction_id);
 		Dictionary result;
 		result["transactionId"] = transaction_id;
@@ -227,12 +270,53 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 		}
 		const String completed_id = transaction_id;
 		const String outcome = method == "godot.transaction.commit" ? "committed" : "rolled_back";
+		if (outcome == "committed") {
+			_append_audit(method, "files_committed", itos(transaction_files.size()));
+		}
+		if (outcome == "rolled_back") {
+			for (const TransactionFile &file : transaction_files) {
+				const String absolute_path = ProjectSettings::get_singleton()->globalize_path(file.path);
+				if (!file.existed) {
+					DirAccess::remove_absolute(absolute_path);
+					_append_audit(method, "file_removed", file.path);
+				} else {
+					Ref<FileAccess> backup = FileAccess::open(absolute_path, FileAccess::WRITE);
+					if (backup.is_valid()) {
+						backup->store_buffer(file.backup_data);
+					} else {
+						_append_audit(method, "restore_failed", file.path);
+						continue;
+					}
+					_append_audit(method, "file_restored", file.path);
+				}
+			}
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
+			}
+		}
 		_append_audit(method, outcome, completed_id);
 		transaction_id.clear();
 		transaction_label.clear();
+		transaction_created_files.clear();
+		transaction_files.clear();
+		transaction_connection_generation = 0;
 		Dictionary result;
 		result["transactionId"] = completed_id;
 		result["outcome"] = outcome;
+		Dictionary response;
+		response["jsonrpc"] = jsonrpc_version();
+		response["id"] = request_id;
+		response["result"] = result;
+		return response;
+	}
+
+	if (method == "godot.audit.clear") {
+		const int previous_count = audit_entries.size();
+		audit_entries.clear();
+		_append_audit(method, "cleared", itos(previous_count));
+		Dictionary result;
+		result["cleared"] = true;
+		result["previousCount"] = previous_count;
 		Dictionary response;
 		response["jsonrpc"] = jsonrpc_version();
 		response["id"] = request_id;
@@ -265,10 +349,19 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 		if (pending_confirmation_id.is_empty() || confirmation_id != pending_confirmation_id) {
 			return _make_error(request_id, -32021, "Confirmation request is not active.");
 		}
+		if (Time::get_singleton()->get_ticks_msec() - pending_confirmation_started_msec > 60000) {
+			const String expired_id = pending_confirmation_id;
+			pending_confirmation_id.clear();
+			pending_confirmation_tool.clear();
+			pending_confirmation_started_msec = 0;
+			_append_audit("confirmation", "expired", expired_id);
+			return _make_error(request_id, -32023, "Confirmation request has expired.");
+		}
 		const String confirmed_tool = pending_confirmation_tool;
 		const bool approved = method == "godot.confirmation.approve";
 		pending_confirmation_id.clear();
 		pending_confirmation_tool.clear();
+		pending_confirmation_started_msec = 0;
 		approved_confirmation_tool = approved ? confirmed_tool : String();
 		_append_audit(confirmed_tool, approved ? "approved" : "rejected", confirmation_id);
 		Dictionary result;
@@ -299,6 +392,7 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 				return _make_error(request_id, -32022, "Another confirmation request is already pending.");
 			}
 			pending_confirmation_id = vformat("confirm-%d", Time::get_singleton()->get_ticks_msec());
+			pending_confirmation_started_msec = Time::get_singleton()->get_ticks_msec();
 			pending_confirmation_tool = name;
 			_append_audit(name, "confirmation_required", pending_confirmation_id);
 			Dictionary error_response = _make_error(request_id, -32020, "Tool confirmation is required.");
@@ -310,20 +404,378 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			error_response["error"] = error;
 			return error_response;
 		}
+		if (name == "godot.resource.create") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String resource_path = arguments.get("resource_path", "");
+			const String resource_type = arguments.get("resource_type", "Resource");
+			const bool allow_overwrite = arguments.get("allow_overwrite", false);
+			const bool approved_resource_type = resource_type == "Resource" || resource_type == "Curve" || resource_type == "Gradient";
+			const String resource_absolute_path = ProjectSettings::get_singleton()->globalize_path(resource_path);
+			if (resource_path.is_empty() || !resource_path.begins_with("res://") || !(resource_path.get_extension() == "tres" || resource_path.get_extension() == "res") || !approved_resource_type) {
+				_append_audit(name, "rejected", "Invalid resource_path or resource_type.");
+				return _make_error(request_id, -32602, "resource_path must be res:// .tres/.res and resource_type must be approved.");
+			}
+			if (FileAccess::exists(resource_absolute_path) && !allow_overwrite) {
+				_append_audit(name, "rejected", "Refused to overwrite an existing resource.");
+				return _make_error(request_id, -32036, "Resource already exists; set allow_overwrite=true after confirmation.");
+			}
+			if (!has_approval && require_confirmation) {
+				return _make_error(request_id, -32020, "Tool confirmation is required.");
+			}
+			approved_confirmation_tool.clear();
+			Ref<Resource> resource;
+			if (resource_type == "Curve") {
+				Ref<Curve> curve;
+				curve.instantiate();
+				const Array points = arguments.get("points", Array());
+				for (const Variant &point_value : points) {
+					if (point_value.get_type() != Variant::VECTOR2) {
+						return _make_error(request_id, -32602, "Curve points must be Vector2 values.");
+					}
+					const Vector2 point = point_value;
+					curve->add_point(point);
+				}
+				resource = curve;
+			} else if (resource_type == "Gradient") {
+				Ref<Gradient> gradient;
+				gradient.instantiate();
+				const Variant colors_variant = arguments.get("colors", Array());
+				const Array colors = colors_variant;
+				if (!colors.is_empty()) {
+					gradient->set_offsets(PackedFloat32Array({ 0.0, 1.0 }));
+					PackedColorArray gradient_colors;
+					for (const Variant &color_value : colors) {
+						Color color;
+						if (color_value.get_type() == Variant::COLOR) {
+							color = color_value;
+						} else if (color_value.get_type() == Variant::ARRAY) {
+							const Array components = color_value;
+							if (components.size() < 3 || components.size() > 4) {
+								return _make_error(request_id, -32602, "Gradient color arrays need 3 or 4 components.");
+							}
+							color = Color((float)components[0], (float)components[1], (float)components[2], components.size() == 4 ? (float)components[3] : 1.0f);
+						} else {
+							return _make_error(request_id, -32602, "Gradient colors must be Color values or arrays.");
+						}
+						gradient_colors.push_back(color);
+					}
+					gradient->set_colors(gradient_colors);
+				}
+				resource = gradient;
+			} else {
+				resource.instantiate();
+			}
+			const Error save_error = ResourceSaver::save(resource, resource_path);
+			if (save_error != OK) {
+				_append_audit(name, "failed", vformat("ResourceSaver error %d", save_error));
+				return _make_error(request_id, -32030, "Resource could not be saved.");
+			}
+			_track_transaction_file(resource_path);
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
+			}
+			Dictionary result;
+			result["created"] = true;
+			result["resource_path"] = resource_path;
+			result["resource_type"] = resource_type;
+			_append_audit(name, "created", resource_path);
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.scene.reparent_node") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", "");
+			const String new_parent_path = arguments.get("new_parent_path", ".");
+			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty() || node_path == ".") {
+				_append_audit(name, "rejected", "Invalid scene_path or node_path.");
+				return _make_error(request_id, -32602, "scene_path and node_path are invalid.");
+			}
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) {
+				return _make_error(request_id, -32033, "Scene could not be loaded.");
+			}
+			Node *scene_root = packed_scene->instantiate();
+			Node *target = scene_root->get_node_or_null(NodePath(node_path));
+			Node *new_parent = new_parent_path == "." ? scene_root : scene_root->get_node_or_null(NodePath(new_parent_path));
+			if (target == nullptr || target == scene_root || new_parent == nullptr || new_parent == target || target->is_ancestor_of(new_parent)) {
+				memdelete(scene_root);
+				return _make_error(request_id, -32034, "Node or new parent path was not found.");
+			}
+			const String old_path = node_path;
+			Node *old_parent = target->get_parent();
+			// Reparenting an instantiated PackedScene node must temporarily clear ownership;
+			// otherwise Godot rejects the hierarchy change as owner-inconsistent.
+			target->set_owner(nullptr);
+			old_parent->remove_child(target);
+			new_parent->add_child(target);
+			target->set_owner(scene_root);
+			Ref<PackedScene> updated_scene;
+			updated_scene.instantiate();
+			updated_scene->pack(scene_root);
+			memdelete(scene_root);
+			const Error save_error = ResourceSaver::save(updated_scene, scene_path);
+			if (save_error != OK) {
+				_append_audit(name, "failed", vformat("ResourceSaver error %d", save_error));
+				return _make_error(request_id, -32030, "Scene could not be saved.");
+			}
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
+			}
+			_track_transaction_file(scene_path);
+			_append_audit(name, "updated", scene_path);
+			Dictionary result;
+			result["updated"] = true;
+			result["scene_path"] = scene_path;
+			result["old_path"] = old_path;
+			result["new_parent_path"] = new_parent_path;
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.scene.rename_node") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", "");
+			const String new_name = arguments.get("new_name", "");
+			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty() || node_path == "." || new_name.is_empty() || new_name.find_char('/') >= 0) {
+				_append_audit(name, "rejected", "Invalid scene_path, node_path or new_name.");
+				return _make_error(request_id, -32602, "scene_path, node_path and new_name are invalid.");
+			}
+			_track_transaction_file(scene_path);
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) {
+				return _make_error(request_id, -32033, "Scene could not be loaded.");
+			}
+			Node *scene_root = packed_scene->instantiate();
+			Node *target = scene_root->get_node_or_null(NodePath(node_path));
+			if (target == nullptr || target == scene_root) {
+				memdelete(scene_root);
+				return _make_error(request_id, -32034, "Scene child node path was not found.");
+			}
+			const String old_name = target->get_name();
+			target->set_name(new_name);
+			Ref<PackedScene> updated_scene;
+			updated_scene.instantiate();
+			updated_scene->pack(scene_root);
+			memdelete(scene_root);
+			const Error save_error = ResourceSaver::save(updated_scene, scene_path);
+			if (save_error != OK) {
+				_append_audit(name, "failed", vformat("ResourceSaver error %d", save_error));
+				return _make_error(request_id, -32030, "Scene could not be saved.");
+			}
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
+			}
+			_track_transaction_file(scene_path);
+			_append_audit(name, "updated", scene_path);
+			Dictionary result;
+			result["updated"] = true;
+			result["scene_path"] = scene_path;
+			result["old_name"] = old_name;
+			result["new_name"] = new_name;
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.scene.remove_node") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", "");
+			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty() || node_path == ".") {
+				_append_audit(name, "rejected", "Invalid scene_path or node_path.");
+				return _make_error(request_id, -32602, "scene_path must be res:// .tscn and node_path must identify a child node.");
+			}
+			_track_transaction_file(scene_path);
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) {
+				return _make_error(request_id, -32033, "Scene could not be loaded.");
+			}
+			Node *scene_root = packed_scene->instantiate();
+			Node *target = scene_root->get_node_or_null(NodePath(node_path));
+			if (target == nullptr || target == scene_root || target->get_parent() == nullptr) {
+				memdelete(scene_root);
+				return _make_error(request_id, -32034, "Scene child node path was not found.");
+			}
+			const String removed_name = target->get_name();
+			target->get_parent()->remove_child(target);
+			memdelete(target);
+			Ref<PackedScene> updated_scene;
+			updated_scene.instantiate();
+			updated_scene->pack(scene_root);
+			memdelete(scene_root);
+			const Error save_error = ResourceSaver::save(updated_scene, scene_path);
+			if (save_error != OK) {
+				_append_audit(name, "failed", vformat("ResourceSaver error %d", save_error));
+				return _make_error(request_id, -32030, "Scene could not be saved.");
+			}
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
+			}
+			_track_transaction_file(scene_path);
+			_append_audit(name, "updated", scene_path);
+			Dictionary result;
+			result["updated"] = true;
+			result["scene_path"] = scene_path;
+			result["node_path"] = node_path;
+			result["removed_name"] = removed_name;
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.scene.add_node") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String parent_path = arguments.get("parent_path", ".");
+			const String node_type = arguments.get("node_type", "Node");
+			const String node_name = arguments.get("node_name", "MCPNode");
+			const bool approved_node_type = node_type == "Node" || node_type == "Node2D" || node_type == "Node3D" || node_type == "Control";
+			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || !approved_node_type || node_name.is_empty()) {
+				_append_audit(name, "rejected", "Invalid scene_path, node_type or node_name.");
+				return _make_error(request_id, -32602, "scene_path, node_type and node_name are invalid.");
+			}
+			_track_transaction_file(scene_path);
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) {
+				return _make_error(request_id, -32033, "Scene could not be loaded.");
+			}
+			Node *scene_root = packed_scene->instantiate();
+			Node *parent = parent_path == "." ? scene_root : scene_root->get_node_or_null(NodePath(parent_path));
+			if (parent == nullptr) {
+				memdelete(scene_root);
+				return _make_error(request_id, -32034, "Scene parent path was not found.");
+			}
+			Object *node_object = ClassDB::instantiate(node_type);
+			Node *new_node = Object::cast_to<Node>(node_object);
+			if (new_node == nullptr) {
+				if (node_object != nullptr) {
+					memdelete(node_object);
+				}
+				memdelete(scene_root);
+				return _make_error(request_id, -32602, "node_type must be an approved Node class.");
+			}
+			new_node->set_name(node_name);
+			parent->add_child(new_node);
+			new_node->set_owner(scene_root);
+			Ref<PackedScene> updated_scene;
+			updated_scene.instantiate();
+			updated_scene->pack(scene_root);
+			memdelete(scene_root);
+			const Error save_error = ResourceSaver::save(updated_scene, scene_path);
+			if (save_error != OK) {
+				_append_audit(name, "failed", vformat("ResourceSaver error %d", save_error));
+				return _make_error(request_id, -32030, "Scene could not be saved.");
+			}
+			_track_transaction_file(scene_path);
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
+			}
+			_track_transaction_file(scene_path);
+			_append_audit(name, "updated", scene_path);
+			Dictionary result;
+			result["updated"] = true;
+			result["scene_path"] = scene_path;
+			result["parent_path"] = parent_path;
+			result["node_name"] = node_name;
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
 		if (name == "godot.scene.create") {
 			const Dictionary arguments = params.get("arguments", Dictionary());
 			const String scene_path = arguments.get("scene_path", "");
 			const String root_type = arguments.get("root_type", "Node");
-			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || root_type.is_empty()) {
+			const bool allow_overwrite = arguments.get("allow_overwrite", false);
+			const bool approved_root_type = root_type == "Node" || root_type == "Node2D" || root_type == "Node3D" || root_type == "Control";
+			const String scene_absolute_path = ProjectSettings::get_singleton()->globalize_path(scene_path);
+			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || root_type.is_empty() || !approved_root_type) {
 				_append_audit(name, "rejected", "Invalid scene_path or root_type.");
-				return _make_error(request_id, -32602, "scene_path must be a res:// .tscn path and root_type must not be empty.");
+				return _make_error(request_id, -32602, "scene_path must be a res:// .tscn path and root_type must be an approved Node type.");
+			}
+			if (FileAccess::exists(scene_absolute_path) && !allow_overwrite) {
+				_append_audit(name, "rejected", "Refused to overwrite an existing scene.");
+				return _make_error(request_id, -32036, "Scene already exists; set allow_overwrite=true after confirmation.");
+			}
+			if (!has_approval && require_confirmation) {
+				// 场景写入必须在主线程执行，并且只允许受控的 PackedScene 保存路径。
+				_append_audit(name, "rejected", "Scene write requires explicit approval.");
+				return _make_error(request_id, -32020, "Tool confirmation is required.");
+			}
+			approved_confirmation_tool.clear();
+			Ref<PackedScene> packed_scene;
+			packed_scene.instantiate();
+			Object *root_object = ClassDB::instantiate(root_type);
+			Node *root_node = Object::cast_to<Node>(root_object);
+			if (root_node == nullptr) {
+				if (root_object != nullptr) {
+					memdelete(root_object);
+				}
+				return _make_error(request_id, -32602, "root_type must be a registered Node class.");
+			}
+			root_node->set_name("MCPRoot");
+			packed_scene->pack(root_node);
+			memdelete(root_node);
+			const Error save_error = ResourceSaver::save(packed_scene, scene_path);
+			if (save_error != OK) {
+				_append_audit(name, "failed", vformat("ResourceSaver error %d", save_error));
+				return _make_error(request_id, -32030, "Scene could not be saved.");
+			}
+			if (EditorFileSystem::get_singleton() != nullptr) {
+				EditorFileSystem::get_singleton()->scan();
 			}
 			Dictionary result;
-			result["accepted"] = true;
+			result["created"] = true;
 			result["scene_path"] = scene_path;
 			result["root_type"] = root_type;
 			result["transaction_active"] = !transaction_id.is_empty();
-			_append_audit(name, "validated", scene_path);
+			if (!transaction_id.is_empty()) {
+				transaction_created_files.push_back(scene_path);
+			}
+			_append_audit(name, "created", scene_path);
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.run.stop") {
+			if (EditorInterface::get_singleton() == nullptr || !EditorInterface::get_singleton()->is_playing_scene()) {
+				return _make_error(request_id, -32035, "No scene is currently running.");
+			}
+			EditorInterface::get_singleton()->stop_playing_scene();
+			_append_audit(name, "stopped", EditorInterface::get_singleton()->get_playing_scene());
+			Dictionary result;
+			result["stopped"] = true;
+			result["scene"] = EditorInterface::get_singleton()->get_playing_scene();
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.run.current_scene") {
+			if (EditorInterface::get_singleton() == nullptr) {
+				return _make_error(request_id, -32031, "Editor interface is unavailable.");
+			}
+			if (EditorInterface::get_singleton()->is_playing_scene()) {
+				return _make_error(request_id, -32032, "A scene is already running.");
+			}
+			EditorInterface::get_singleton()->play_current_scene();
+			_append_audit(name, "started", EditorInterface::get_singleton()->get_edited_scene_root() != nullptr ? EditorInterface::get_singleton()->get_edited_scene_root()->get_scene_file_path() : String());
+			Dictionary result;
+			result["started"] = true;
+			result["scene"] = EditorInterface::get_singleton()->get_edited_scene_root() != nullptr ? EditorInterface::get_singleton()->get_edited_scene_root()->get_scene_file_path() : String();
 			Dictionary response;
 			response["jsonrpc"] = jsonrpc_version();
 			response["id"] = request_id;
@@ -440,6 +892,7 @@ void MCPService::_notification(int p_what) {
 
 	if (client.is_null() && server->is_connection_available()) {
 		client = server->take_connection();
+		connection_generation++;
 		client->set_no_delay(true);
 	}
 
@@ -520,6 +973,18 @@ Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_po
 }
 
 void MCPService::stop() {
+	pending_confirmation_id.clear();
+	pending_confirmation_tool.clear();
+	pending_confirmation_started_msec = 0;
+	approved_confirmation_tool.clear();
+	if (!transaction_id.is_empty()) {
+		_append_audit("godot.transaction", "aborted_on_stop", transaction_id);
+		transaction_id.clear();
+		transaction_label.clear();
+		transaction_created_files.clear();
+		transaction_files.clear();
+		transaction_connection_generation = 0;
+	}
 	if (server.is_valid() && server->is_listening()) {
 		server->stop();
 		_append_activity("MCP service stopped.");
@@ -541,8 +1006,13 @@ MCPService::MCPService() {
 
 	tool_registry.push_back({ "godot.editor.status", "Returns the state of the built-in Godot MCP server.", "read-only", "low", false });
 	tool_registry.push_back({ "godot.scene.create", "Creates a new scene with an approved root type.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.add_node", "Adds an approved child node to an existing scene.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.remove_node", "Removes a child node from an existing scene.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.rename_node", "Renames a child node in an existing scene.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.reparent_node", "Moves a child node under another approved parent.", "scene-write", "medium", true });
 	tool_registry.push_back({ "godot.resource.create", "Creates an approved Godot resource type.", "project-write", "medium", true });
 	tool_registry.push_back({ "godot.run.current_scene", "Runs the current scene through the editor debugger.", "run-control", "high", true });
+	tool_registry.push_back({ "godot.run.stop", "Stops the currently running scene.", "run-control", "high", true });
 }
 
 MCPService::~MCPService() {
