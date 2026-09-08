@@ -552,3 +552,5 @@ initialize / tools/list / godot.editor.status
 - [x] **P2-confirmation-regression**：smoke test 增加无效 confirmation ID 返回 -32021 验证，覆盖确认协议的非法输入路径。
 - [x] **P2-resource-confirmation**：资源创建与场景创建统一执行确认策略，未批准返回 -32020；资源成功创建后登记事务快照，修复多文件 rollback 计数回归。
 - [x] **P2-reparent-transaction-regression**：修复重新挂载节点的 owner 一致性与脱树路径错误；将 reparent 场景修改延后登记事务快照；smoke test 使用真实层级路径验证事务登记与 rollback。
+- [x] **P2-editor-capture**：新增 `godot.capture.editor_view`，抓取 Godot 主编辑器 viewport 保存为受控 `user://.png`，返回路径、绝对路径、MIME、宽高；接入只读低风险工具注册、审计和 smoke test；已实际生成 1793x803 PNG 并通过图像读取验证。
+- [x] **P3-3d-authoring-foundation**：新增受控 `godot.scene.add_3d_node`、`set_transform`、`set_property`、`set_mesh`、`set_material` 与 `godot.run.capture_view`；支持 Node3D、MeshInstance3D、Camera3D、DirectionalLight3D、OmniLight3D、SpotLight3D，Box/Sphere/Plane primitive mesh，StandardMaterial3D 颜色及受控相机/灯光属性；构建成功，3D MCP 调用和完整 smoke test 通过。

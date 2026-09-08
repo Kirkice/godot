@@ -164,3 +164,11 @@ py -m pip install --user scons
 ### `msgfmt not found`
 
 该警告通常不阻断构建；Godot 会回退使用 `.po` 翻译文件。只有需要预编译 `.mo` 翻译资源时才需单独安装 GNU gettext。
+
+
+MCP 连接、Agent 配置和 3D 场景操作分别使用 `godot-mcp-common.md` 与 `godot-mcp-3d-scene.md`。本 Skill 不包含 MCP 场景操作，也不硬编码项目路径、Endpoint、端口或 Token。
+
+如果用户要求 MCP 场景任务，请切换到相应 Skill；如果所需路径、Endpoint 或权限未知，先询问用户，不得猜测。
+
+<!-- Legacy MCP notes intentionally removed; keep engine compilation independent. -->
+

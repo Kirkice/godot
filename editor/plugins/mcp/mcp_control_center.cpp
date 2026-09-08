@@ -63,6 +63,7 @@ constexpr const char *SETTING_AUTO_PORT = "mcp/bridge/auto_select_port";
 constexpr const char *SETTING_START_WITH_EDITOR = "mcp/bridge/start_with_editor";
 constexpr const char *SETTING_TOKEN = "mcp/bridge/token";
 constexpr const char *SETTING_CONFIRMATION = "mcp/bridge/require_confirmation";
+constexpr const char *SETTING_REQUIRE_TOKEN = "mcp/bridge/require_token";
 constexpr const char *SETTING_CONFIRMATION_INITIALIZED = "mcp/bridge/confirmation_initialized";
 
 Label *create_section_title(const String &p_text) {
@@ -134,6 +135,7 @@ void MCPControlCenter::_register_settings() {
 		editor_settings->set_initial_value(SETTING_START_WITH_EDITOR, false);
 		editor_settings->set_initial_value(SETTING_TOKEN, "");
 		editor_settings->set_initial_value(SETTING_CONFIRMATION, true);
+		editor_settings->set_initial_value(SETTING_REQUIRE_TOKEN, false);
 		editor_settings->set_initial_value(SETTING_CONFIRMATION_INITIALIZED, false);
 	}
 }
@@ -156,6 +158,7 @@ void MCPControlCenter::_load_settings() {
 		EditorSettings::save();
 	}
 	confirmation_required->set_pressed(confirmation_value);
+	token_required->set_pressed(editor_settings->get(SETTING_REQUIRE_TOKEN));
 
 	String saved_token = editor_settings->get(SETTING_TOKEN);
 	if (saved_token.is_empty()) {
@@ -181,6 +184,7 @@ void MCPControlCenter::_save_settings() {
 	editor_settings->set(SETTING_AUTO_PORT, auto_select_port->is_pressed());
 	editor_settings->set(SETTING_START_WITH_EDITOR, start_with_editor->is_pressed());
 	editor_settings->set(SETTING_CONFIRMATION, confirmation_required->is_pressed());
+	editor_settings->set(SETTING_REQUIRE_TOKEN, token_required->is_pressed());
 	editor_settings->set(SETTING_TOKEN, token->get_text());
 }
 
@@ -319,7 +323,7 @@ void MCPControlCenter::_start_pressed() {
 	if (service == nullptr) {
 		return;
 	}
-	const Error err = service->start(bind_address->get_text(), (int)port->get_value(), auto_select_port->is_pressed(), token->get_text(), confirmation_required->is_pressed());
+	const Error err = service->start(bind_address->get_text(), (int)port->get_value(), auto_select_port->is_pressed(), token->get_text(), confirmation_required->is_pressed(), token_required->is_pressed());
 	if (err == OK) {
 		_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), TTR("MCP service started.")));
 	} else {
@@ -364,6 +368,16 @@ void MCPControlCenter::_start_with_editor_toggled(bool p_pressed) {
 void MCPControlCenter::_confirmation_toggled(bool p_pressed) {
 	_save_settings();
 	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), p_pressed ? TTR("Confirmation required for write tools.") : TTR("Confirmation requirement disabled.")));
+}
+
+void MCPControlCenter::_token_required_toggled(bool p_pressed) {
+	if (!p_pressed && !_is_loopback_address(bind_address->get_text())) {
+		token_required->set_pressed(true);
+		_append_activity(TTR("Token bypass is only allowed on loopback addresses."));
+		return;
+	}
+	_save_settings();
+	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), p_pressed ? TTR("Bearer token required.") : TTR("Bearer token disabled for loopback only.")));
 }
 
 void MCPControlCenter::_tool_search_changed(const String &p_text) {
@@ -513,6 +527,10 @@ MCPControlCenter::MCPControlCenter() {
 	confirmation_required->set_text(TTR("Confirm write tools"));
 	confirmation_required->connect(SceneStringName(toggled), callable_mp(this, &MCPControlCenter::_confirmation_toggled));
 	options_row->add_child(confirmation_required);
+	token_required = memnew(CheckBox);
+	token_required->set_text(TTR("Require Bearer token"));
+	token_required->connect(SceneStringName(toggled), callable_mp(this, &MCPControlCenter::_token_required_toggled));
+	options_row->add_child(token_required);
 
 	HBoxContainer *endpoint_row = memnew(HBoxContainer);
 	endpoint_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -633,7 +651,13 @@ MCPControlCenter::MCPControlCenter() {
 	tools.push_back({ SNAME("Scene Authoring"), SNAME("godot.scene.add_node"), TTR("Adds a typed child node to an existing scene."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"scene_path\", \"parent_path\", \"node_type\"]\n}", TOOL_STATUS_IMPLEMENTED });
 	tools.push_back({ SNAME("Resources & Assets"), SNAME("godot.resource.create"), TTR("Creates an approved Godot resource type."), TTR("Project write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"resource_type\"]\n}", TOOL_STATUS_IMPLEMENTED });
 	tools.push_back({ SNAME("Run & Debug"), SNAME("godot.run.current_scene"), TTR("Runs the current scene through the editor debugger."), TTR("Run control"), TTR("High"), "{\n  \"type\": \"object\",\n  \"properties\": {}\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Capture & Validation"), SNAME("godot.capture.editor_view"), TTR("Captures the active editor viewport for visual validation."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\",\n  \"properties\": {}\n}", TOOL_STATUS_PLANNED });
+	tools.push_back({ SNAME("Capture & Validation"), SNAME("godot.capture.editor_view"), TTR("Captures the active editor viewport for visual validation."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\",\n  \"properties\": {}\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.add_3d_node"), TTR("Adds a controlled 3D node such as mesh, camera or light."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_transform"), TTR("Sets position, rotation and scale for a 3D node."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_property"), TTR("Sets an approved camera or light property."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_mesh"), TTR("Assigns a controlled primitive mesh."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_material"), TTR("Assigns a controlled StandardMaterial3D color."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Capture & Validation"), SNAME("godot.run.capture_view"), TTR("Captures the running/editor viewport for visual validation."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
 	tools.push_back({ SNAME("Transactions & Security"), SNAME("godot.transaction.begin"), TTR("Starts a named MCP transaction for grouped editor changes."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"label\"]\n}", TOOL_STATUS_PLANNED });
 
 	_load_settings();

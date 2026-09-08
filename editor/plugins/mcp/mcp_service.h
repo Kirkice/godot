@@ -79,6 +79,7 @@ public:
 	String transaction_id;
 	String transaction_label;
 	bool require_confirmation = true;
+	bool require_token = true;
 	uint64_t connection_generation = 0;
 	uint64_t transaction_connection_generation = 0;
 	String pending_confirmation_id;
@@ -87,6 +88,9 @@ public:
 	String approved_confirmation_tool;
 	Vector<String> transaction_created_files;
 	Vector<TransactionFile> transaction_files;
+	String pending_camera_capture_path;
+	String pending_camera_capture_camera_path;
+	String pending_camera_capture_scene_path;
 
 	void _append_activity(const String &p_message);
 	void _append_audit(const String &p_method, const String &p_outcome, const String &p_detail);
@@ -98,14 +102,16 @@ public:
 	Array _get_tools() const;
 	const ToolDefinition *_find_tool(const String &p_name) const;
 	void _track_transaction_file(const String &p_path);
+	void _refresh_scene_after_mutation(const String &p_scene_path);
 	void _clear_client();
+	void _on_camera_screenshot(int64_t p_width, int64_t p_height, const String &p_embedded_path, const Rect2i &p_rect, const String &p_output_path);
 
 protected:
 	static void _bind_methods();
 	void _notification(int p_what);
 
 public:
-	Error start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation = true);
+	Error start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation = true, bool p_require_token = true);
 	void stop();
 	bool is_running() const { return state == STATE_RUNNING; }
 	State get_state() const { return state; }

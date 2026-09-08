@@ -30,6 +30,7 @@
 #include "mcp_service.h"
 
 #include "core/io/json.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/io/resource_saver.h"
 #include "core/io/resource_loader.h"
@@ -40,9 +41,30 @@
 #include "core/string/print_string.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/editor_interface.h"
+#include "editor/run/editor_run.h"
+#include "editor/run/editor_run_bar.h"
+#include "editor/editor_node.h"
+#include "scene/main/viewport.h"
+#include "scene/resources/texture.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/resources/curve.h"
 #include "scene/resources/gradient.h"
+#include "scene/3d/camera_3d.h"
+#include "scene/3d/light_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/node_3d.h"
+#include "scene/resources/material.h"
+#include "scene/resources/mesh.h"
+#include "scene/resources/3d/primitive_meshes.h"
+
+void MCPService::_on_camera_screenshot(int64_t p_width, int64_t p_height, const String &p_embedded_path, const Rect2i &p_rect, const String &p_output_path) {
+	if (p_embedded_path.is_empty()) return;
+	Ref<Image> image = Image::load_from_file(p_embedded_path);
+	DirAccess::remove_absolute(p_embedded_path);
+	if (image.is_null() || image->is_empty()) return;
+	image->convert(Image::FORMAT_RGBA8);
+	if (image->save_png(p_output_path) == OK) _append_audit("godot.run.capture_camera_view", "captured", p_output_path);
+}
 
 namespace {
 constexpr int MAX_REQUEST_SIZE = 1024 * 1024;
@@ -53,6 +75,15 @@ String jsonrpc_version() {
 } // namespace
 
 void MCPService::_bind_methods() {
+}
+
+void MCPService::_refresh_scene_after_mutation(const String &p_scene_path) {
+	if (EditorFileSystem::get_singleton() != nullptr) {
+		EditorFileSystem::get_singleton()->scan();
+	}
+	if (EditorInterface::get_singleton() != nullptr && EditorInterface::get_singleton()->get_edited_scene_root() != nullptr && EditorInterface::get_singleton()->get_edited_scene_root()->get_scene_file_path() == p_scene_path) {
+		EditorInterface::get_singleton()->reload_scene_from_path(p_scene_path);
+	}
 }
 
 void MCPService::_track_transaction_file(const String &p_path) {
@@ -193,6 +224,7 @@ Dictionary MCPService::_make_status_result() const {
 	result["transaction_label"] = transaction_label;
 	result["transaction_created_files"] = transaction_created_files.size();
 	result["require_confirmation"] = require_confirmation;
+	result["require_token"] = require_token;
 	result["pending_confirmation"] = !pending_confirmation_id.is_empty();
 	result["pending_confirmation_id"] = pending_confirmation_id;
 	result["pending_confirmation_tool"] = pending_confirmation_tool;
@@ -403,6 +435,210 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			error["data"] = confirmation_data;
 			error_response["error"] = error;
 			return error_response;
+		}
+		if (name == "godot.scene.add_3d_node") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String parent_path = arguments.get("parent_path", ".");
+			const String node_type = arguments.get("node_type", "Node3D");
+			const String node_name = arguments.get("node_name", "MCPNode3D");
+			const bool approved_type = node_type == "Node3D" || node_type == "MeshInstance3D" || node_type == "Camera3D" || node_type == "DirectionalLight3D" || node_type == "OmniLight3D" || node_type == "SpotLight3D";
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || !approved_type || node_name.is_empty()) {
+				return _make_error(request_id, -32602, "Invalid 3D scene path, node type or node name.");
+			}
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) {
+				return _make_error(request_id, -32033, "Scene could not be loaded.");
+			}
+			Node *root = packed_scene->instantiate();
+			Node *parent = parent_path == "." ? root : root->get_node_or_null(NodePath(parent_path));
+			if (parent == nullptr) {
+				memdelete(root);
+				return _make_error(request_id, -32034, "Scene parent path was not found.");
+			}
+			Object *object = ClassDB::instantiate(node_type);
+			Node *node = Object::cast_to<Node>(object);
+			if (node == nullptr) {
+				if (object != nullptr) memdelete(object);
+				memdelete(root);
+				return _make_error(request_id, -32602, "3D node type could not be instantiated.");
+			}
+			node->set_name(node_name);
+			parent->add_child(node);
+			node->set_owner(root);
+			Ref<PackedScene> updated;
+			updated.instantiate();
+			updated->pack(root);
+			memdelete(root);
+			const Error save_error = ResourceSaver::save(updated, scene_path);
+			if (save_error != OK) return _make_error(request_id, -32030, "Scene could not be saved.");
+			_track_transaction_file(scene_path);
+			_refresh_scene_after_mutation(scene_path);
+			_append_audit(name, "updated", scene_path);
+			Dictionary result;
+			result["updated"] = true;
+			result["scene_path"] = scene_path;
+			result["node_type"] = node_type;
+			result["node_name"] = node_name;
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.scene.set_transform") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", "");
+			const Array position = arguments.get("position", Array());
+			const Array rotation_degrees = arguments.get("rotation_degrees", Array());
+			const Array scale = arguments.get("scale", Array());
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty() || position.size() != 3 || rotation_degrees.size() != 3 || scale.size() != 3) return _make_error(request_id, -32602, "Transform requires scene_path, node_path and 3-component position, rotation_degrees, scale.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded.");
+			Node *root = packed_scene->instantiate();
+			Node3D *node = Object::cast_to<Node3D>(root->get_node_or_null(NodePath(node_path)));
+			if (node == nullptr) { memdelete(root); return _make_error(request_id, -32034, "3D node path was not found."); }
+			node->set_position(Vector3((float)position[0], (float)position[1], (float)position[2]));
+			node->set_rotation_degrees(Vector3((float)rotation_degrees[0], (float)rotation_degrees[1], (float)rotation_degrees[2]));
+			node->set_scale(Vector3((float)scale[0], (float)scale[1], (float)scale[2]));
+			Ref<PackedScene> updated;
+			updated.instantiate(); updated->pack(root); memdelete(root);
+			if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved.");
+			_track_transaction_file(scene_path);
+			_refresh_scene_after_mutation(scene_path);
+			_append_audit(name, "updated", scene_path);
+			Dictionary result; result["updated"] = true; result["scene_path"] = scene_path; result["node_path"] = node_path;
+			Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.scene.set_property") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", "");
+			const String property = arguments.get("property", "");
+			const Variant value = arguments.get("value", Variant());
+			const bool allowed = property == "visible" || property == "omni_range" || property == "spot_range" || property == "spot_angle" || property == "light_energy" || property == "light_color" || property == "shadow_enabled" || property == "current" || property == "fov" || property == "near" || property == "far";
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty() || !allowed) return _make_error(request_id, -32602, "Property is not allowed.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path); if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded.");
+			Node *root = packed_scene->instantiate(); Node *node = root->get_node_or_null(NodePath(node_path));
+			if (node == nullptr) { memdelete(root); return _make_error(request_id, -32602, "Node or property value is invalid."); }
+			Variant typed_value = value;
+			if (property == "light_color" && value.get_type() == Variant::ARRAY) {
+				const Array components = value;
+				if (components.size() < 3 || components.size() > 4) { memdelete(root); return _make_error(request_id, -32602, "light_color requires RGB or RGBA components."); }
+				typed_value = Color((float)components[0], (float)components[1], (float)components[2], components.size() == 4 ? (float)components[3] : 1.0f);
+			}
+			node->set(property, typed_value);
+			Ref<PackedScene> updated; updated.instantiate(); updated->pack(root); memdelete(root);
+			if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved.");
+			_track_transaction_file(scene_path); _refresh_scene_after_mutation(scene_path); _append_audit(name, "updated", scene_path);
+			Dictionary result; result["updated"] = true; result["property"] = property; Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.scene.set_mesh") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", "");
+			const String mesh_type = arguments.get("mesh_type", "BoxMesh");
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty() || (mesh_type != "BoxMesh" && mesh_type != "SphereMesh" && mesh_type != "PlaneMesh")) return _make_error(request_id, -32602, "Mesh assignment arguments are invalid.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path); if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded.");
+			Node *root = packed_scene->instantiate(); MeshInstance3D *node = Object::cast_to<MeshInstance3D>(root->get_node_or_null(NodePath(node_path)));
+			if (node == nullptr) { memdelete(root); return _make_error(request_id, -32034, "MeshInstance3D node was not found."); }
+			Ref<Mesh> mesh;
+			if (mesh_type == "BoxMesh") { Ref<BoxMesh> value; value.instantiate(); mesh = value; }
+			else if (mesh_type == "SphereMesh") { Ref<SphereMesh> value; value.instantiate(); mesh = value; }
+			else { Ref<PlaneMesh> value; value.instantiate(); mesh = value; }
+			node->set_mesh(mesh);
+			Ref<PackedScene> updated; updated.instantiate(); updated->pack(root); memdelete(root); if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved.");
+			_track_transaction_file(scene_path); _refresh_scene_after_mutation(scene_path); _append_audit(name, "updated", scene_path);
+			Dictionary result; result["updated"] = true; result["mesh_type"] = mesh_type; Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.scene.set_material") {
+			const Dictionary arguments = params.get("arguments", Dictionary()); const String scene_path = arguments.get("scene_path", ""); const String node_path = arguments.get("node_path", ""); const Variant color_value = arguments.get("color", Array());
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty()) return _make_error(request_id, -32602, "Material assignment arguments are invalid.");
+			Array components = color_value; if (components.size() != 3 && components.size() != 4) return _make_error(request_id, -32602, "Material color must contain 3 or 4 components.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path); if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded."); Node *root = packed_scene->instantiate(); MeshInstance3D *node = Object::cast_to<MeshInstance3D>(root->get_node_or_null(NodePath(node_path))); if (node == nullptr) { memdelete(root); return _make_error(request_id, -32034, "MeshInstance3D node was not found."); }
+			Ref<StandardMaterial3D> material; material.instantiate(); material->set_albedo(Color((float)components[0], (float)components[1], (float)components[2], components.size() == 4 ? (float)components[3] : 1.0f)); node->set_material_override(material);
+			Ref<PackedScene> updated; updated.instantiate(); updated->pack(root); memdelete(root); if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved."); _track_transaction_file(scene_path); _refresh_scene_after_mutation(scene_path); _append_audit(name, "updated", scene_path); Dictionary result; result["updated"] = true; Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.project.set_main_scene") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || ResourceLoader::load(scene_path).is_null()) return _make_error(request_id, -32602, "scene_path must be an existing res:// .tscn scene.");
+			ProjectSettings::get_singleton()->set("application/run/main_scene", ResourceUID::path_to_uid(scene_path));
+			ProjectSettings::get_singleton()->save();
+			_append_audit(name, "updated", scene_path);
+			Dictionary result; result["updated"] = true; result["scene_path"] = scene_path;
+			Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.run.capture_camera_view") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String camera_path = arguments.get("camera_path", "Camera");
+			const String output_path = arguments.get("output_path", "user://mcp_camera_capture.png");
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || !output_path.begins_with("user://") || output_path.get_extension().to_lower() != "png") return _make_error(request_id, -32602, "Invalid scene, camera or output path.");
+			Node *root = EditorInterface::get_singleton() != nullptr ? EditorInterface::get_singleton()->get_edited_scene_root() : nullptr;
+			Camera3D *camera = root != nullptr && root->get_scene_file_path() == scene_path ? Object::cast_to<Camera3D>(root->get_node_or_null(NodePath(camera_path))) : nullptr;
+			if (camera == nullptr) return _make_error(request_id, -32034, "Target Camera3D must be open in the editor.");
+			if (EditorRunBar::get_singleton() == nullptr || !EditorRunBar::get_singleton()->is_playing() || !EditorRun::request_screenshot(callable_mp(this, &MCPService::_on_camera_screenshot).bind(output_path))) return _make_error(request_id, -32040, "Running embedded game viewport is unavailable.");
+			pending_camera_capture_path = output_path; pending_camera_capture_camera_path = camera_path; pending_camera_capture_scene_path = scene_path;
+			Dictionary result; result["capture_requested"] = true; result["camera_path"] = camera_path; result["path"] = output_path; result["mime_type"] = "image/png"; result["note"] = "Capture is completed asynchronously after the running game viewport delivers its rendered buffer.";
+			Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.editor.open_scene") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn") return _make_error(request_id, -32602, "scene_path must be a res:// .tscn path.");
+			if (EditorInterface::get_singleton() == nullptr) return _make_error(request_id, -32031, "Editor interface is unavailable.");
+			EditorInterface::get_singleton()->open_scene_from_path(scene_path);
+			_append_audit(name, "opened", scene_path);
+			Dictionary result; result["opened"] = true; result["scene_path"] = scene_path;
+			Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.run.capture_view") {
+			const Dictionary capture_arguments = params.get("arguments", Dictionary());
+			const String output_path = capture_arguments.get("output_path", "user://mcp_run_capture.png");
+			if (!output_path.begins_with("user://") || output_path.get_extension().to_lower() != "png") return _make_error(request_id, -32602, "output_path must be a user:// .png path.");
+			EditorNode *editor_node = EditorNode::get_singleton(); if (editor_node == nullptr || editor_node->get_viewport() == nullptr) return _make_error(request_id, -32040, "Editor viewport is unavailable.");
+			Ref<ViewportTexture> texture = editor_node->get_viewport()->get_texture(); if (texture.is_null()) return _make_error(request_id, -32040, "Viewport texture is unavailable.");
+			Ref<Image> image = texture->get_image(); if (image.is_null()) return _make_error(request_id, -32040, "Viewport image is unavailable."); image->convert(Image::FORMAT_RGBA8); if (image->save_png(output_path) != OK) return _make_error(request_id, -32040, "Viewport capture could not be saved.");
+			Dictionary result; result["captured"] = true; result["path"] = output_path; result["absolute_path"] = ProjectSettings::get_singleton()->globalize_path(output_path); result["mime_type"] = "image/png"; result["width"] = image->get_width(); result["height"] = image->get_height(); Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+		}
+		if (name == "godot.capture.editor_view") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String requested_path = arguments.get("output_path", "user://mcp_editor_capture.png");
+			if (!requested_path.begins_with("user://") || requested_path.get_extension().to_lower() != "png") {
+				return _make_error(request_id, -32602, "output_path must be a user:// .png path.");
+			}
+			EditorNode *editor_node = EditorNode::get_singleton();
+			if (editor_node == nullptr || editor_node->get_viewport() == nullptr) {
+				return _make_error(request_id, -32040, "Editor viewport is unavailable.");
+			}
+			Ref<ViewportTexture> texture = editor_node->get_viewport()->get_texture();
+			if (texture.is_null()) {
+				return _make_error(request_id, -32040, "Editor viewport texture is unavailable.");
+			}
+			Ref<Image> image = texture->get_image();
+			if (image.is_null() || image->is_empty()) {
+				return _make_error(request_id, -32040, "Editor viewport image is unavailable.");
+			}
+			image->convert(Image::FORMAT_RGBA8);
+			const Error save_error = image->save_png(requested_path);
+			if (save_error != OK) {
+				return _make_error(request_id, -32040, "Editor screenshot could not be saved.");
+			}
+			_append_audit(name, "captured", requested_path);
+			Dictionary result;
+			result["captured"] = true;
+			result["path"] = requested_path;
+			result["absolute_path"] = ProjectSettings::get_singleton()->globalize_path(requested_path);
+			result["mime_type"] = "image/png";
+			result["width"] = image->get_width();
+			result["height"] = image->get_height();
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
 		}
 		if (name == "godot.resource.create") {
 			const Dictionary arguments = params.get("arguments", Dictionary());
@@ -676,9 +912,7 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 				return _make_error(request_id, -32030, "Scene could not be saved.");
 			}
 			_track_transaction_file(scene_path);
-			if (EditorFileSystem::get_singleton() != nullptr) {
-				EditorFileSystem::get_singleton()->scan();
-			}
+			_refresh_scene_after_mutation(scene_path);
 			_track_transaction_file(scene_path);
 			_append_audit(name, "updated", scene_path);
 			Dictionary result;
@@ -863,8 +1097,7 @@ void MCPService::_handle_request(const String &p_request) {
 		}
 	}
 
-	// 本地服务仍要求 Bearer Token，避免同机其他进程无授权调用编辑器自动化接口。
-	if (authorization.strip_edges() != authorization_value) {
+	if (require_token && authorization.strip_edges() != authorization_value) {
 		_send_response(401, _make_error(Variant(), -32001, "Unauthorized."));
 		_append_audit("authentication", "rejected", "Invalid Bearer token.");
 		_append_activity("Rejected an MCP request with an invalid token.");
@@ -943,7 +1176,7 @@ void MCPService::_notification(int p_what) {
 	_clear_client();
 }
 
-Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation) {
+Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation, bool p_require_token) {
 	stop();
 	if (p_bind_address != "127.0.0.1" && p_bind_address != "::1") {
 		last_error = "Only loopback addresses are allowed.";
@@ -965,6 +1198,7 @@ Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_po
 	token = p_token.strip_edges();
 	authorization_value = String("Bearer ") + token;
 	require_confirmation = p_require_confirmation;
+	require_token = p_require_token;
 	last_error.clear();
 	state = STATE_RUNNING;
 	set_process(true);
@@ -1005,6 +1239,16 @@ MCPService::MCPService() {
 	set_process(false);
 
 	tool_registry.push_back({ "godot.editor.status", "Returns the state of the built-in Godot MCP server.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.capture.editor_view", "Captures the active Godot editor viewport as a PNG.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.scene.add_3d_node", "Adds an approved 3D node to a scene.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.set_transform", "Sets a controlled 3D node transform.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.set_property", "Sets an approved 3D/light/camera property.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.set_mesh", "Assigns a controlled mesh resource.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.scene.set_material", "Assigns a controlled material.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.run.capture_view", "Captures the running/editor game viewport as PNG.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.editor.open_scene", "Opens a controlled project scene in the editor.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.project.set_main_scene", "Sets an existing project scene as the main scene.", "project-write", "medium", true });
+	tool_registry.push_back({ "godot.run.capture_camera_view", "Captures the target Camera3D viewport buffer as PNG.", "read-only", "low", false });
 	tool_registry.push_back({ "godot.scene.create", "Creates a new scene with an approved root type.", "scene-write", "medium", true });
 	tool_registry.push_back({ "godot.scene.add_node", "Adds an approved child node to an existing scene.", "scene-write", "medium", true });
 	tool_registry.push_back({ "godot.scene.remove_node", "Removes a child node from an existing scene.", "scene-write", "medium", true });

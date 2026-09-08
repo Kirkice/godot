@@ -81,6 +81,7 @@ class MCPControlCenter : public EditorDock {
 	TextEdit *tool_schema = nullptr;
 	TextEdit *activity_log = nullptr;
 	CheckBox *confirmation_required = nullptr;
+	CheckBox *token_required = nullptr;
 	Label *pending_confirmation = nullptr;
 
 	Vector<ToolInfo> tools;
@@ -114,6 +115,7 @@ class MCPControlCenter : public EditorDock {
 	void _copy_token();
 	void _regenerate_token();
 	void _confirmation_toggled(bool p_pressed);
+	void _token_required_toggled(bool p_pressed);
 	void _update_confirmation_view();
 
 protected:

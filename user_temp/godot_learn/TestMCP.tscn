@@ -1,0 +1,65 @@
+[gd_scene format=3 uid="uid://cvbmkwxlvlu1m"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_12r6t"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_12r6t"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_2o0l1"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_12r6t"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_85vjf"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_12r6t"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_2o0l1"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_85vjf"]
+
+[node name="MCPRoot" type="Node3D" unique_id=1296120332]
+
+[node name="Sphere" type="MeshInstance3D" parent="." unique_id=269840688]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 1, 0)
+material_override = SubResource("StandardMaterial3D_12r6t")
+mesh = SubResource("SphereMesh_12r6t")
+
+[node name="Cube" type="MeshInstance3D" parent="." unique_id=815462051]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+material_override = SubResource("StandardMaterial3D_2o0l1")
+mesh = SubResource("BoxMesh_12r6t")
+
+[node name="Plane" type="MeshInstance3D" parent="." unique_id=2050056572]
+transform = Transform3D(8, 0, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0)
+material_override = SubResource("StandardMaterial3D_85vjf")
+mesh = SubResource("PlaneMesh_12r6t")
+
+[node name="DirectionalLight" type="DirectionalLight3D" parent="." unique_id=1092986960]
+transform = Transform3D(0.90630776, 0.29883623, -0.29883623, 0, 0.70710677, 0.70710677, 0.42261827, -0.6408563, 0.6408563, 0, 6, 4)
+light_color = Color(0, 0.2, 1, 1)
+light_energy = 3.0
+shadow_enabled = true
+
+[node name="PointLight" type="OmniLight3D" parent="." unique_id=920489060]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 3, 2)
+light_color = Color(1, 0, 0, 1)
+light_energy = 4.74
+
+[node name="SpotLight" type="SpotLight3D" parent="." unique_id=1923486115]
+transform = Transform3D(0.90630776, -0.29883623, 0.29883623, 0, 0.70710677, 0.70710677, -0.42261827, -0.6408563, 0.6408563, 2, 4, 3)
+light_color = Color(1, 1, 0, 1)
+light_energy = 5.0
+spot_range = 12.3
+spot_attenuation = 1.17
+
+[node name="Camera" type="Camera3D" parent="." unique_id=1482889753]
+transform = Transform3D(1, 0, 0, 0, 0.95105654, 0.309017, 0, -0.309017, 0.95105654, 0, 5, 12)
+current = true
+fov = 50.0
+
+[node name="Sphere2" type="MeshInstance3D" parent="." unique_id=566032960]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 1, 0)
+mesh = SubResource("SphereMesh_2o0l1")
+
+[node name="Sphere3" type="MeshInstance3D" parent="." unique_id=172615765]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 1, 0)
+mesh = SubResource("SphereMesh_85vjf")
