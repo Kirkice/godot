@@ -44,6 +44,15 @@ String jsonrpc_version() {
 void MCPService::_bind_methods() {
 }
 
+const MCPService::ToolDefinition *MCPService::_find_tool(const String &p_name) const {
+	for (const ToolDefinition &tool : tool_registry) {
+		if (tool.name == p_name) {
+			return &tool;
+		}
+	}
+	return nullptr;
+}
+
 void MCPService::_append_activity(const String &p_message) {
 	activity += vformat("%s  %s\n", Time::get_singleton()->get_time_string_from_system(), p_message);
 	if (activity.length() > 12000) {
@@ -82,34 +91,51 @@ Dictionary MCPService::_make_error(const Variant &p_id, int p_code, const String
 
 Array MCPService::_get_tools() const {
 	Array tools;
-
 	Dictionary input_schema;
 	input_schema["type"] = "object";
 	input_schema["properties"] = Dictionary();
 	input_schema["additionalProperties"] = false;
 
-	Dictionary tool;
-	tool["name"] = "godot.editor.status";
-	tool["title"] = "Godot Editor Status";
-	tool["description"] = "Returns the state of the built-in Godot MCP server.";
-	tool["inputSchema"] = input_schema;
-	tools.push_back(tool);
-	tools.push_back(Dictionary());
+	for (const ToolDefinition &definition : tool_registry) {
+		Dictionary tool;
+		tool["name"] = definition.name;
+		tool["description"] = definition.description;
+		tool["inputSchema"] = input_schema;
+		tool["x-godot-permission"] = definition.permission;
+		tool["x-godot-risk"] = definition.risk;
+		tool["x-godot-requires-confirmation"] = definition.requires_confirmation;
+		tools.push_back(tool);
+	}
+
 	Dictionary transaction_begin;
 	transaction_begin["name"] = "godot.transaction.begin";
 	transaction_begin["description"] = "Starts a named MCP transaction shell.";
 	transaction_begin["inputSchema"] = input_schema;
-	tools[1] = transaction_begin;
+	tools.push_back(transaction_begin);
+
 	Dictionary transaction_commit;
 	transaction_commit["name"] = "godot.transaction.commit";
 	transaction_commit["description"] = "Commits the active MCP transaction shell.";
 	transaction_commit["inputSchema"] = input_schema;
 	tools.push_back(transaction_commit);
+
+	Dictionary confirmation_approve;
+	confirmation_approve["name"] = "godot.confirmation.approve";
+	confirmation_approve["description"] = "Approves the active write-tool confirmation request.";
+	confirmation_approve["inputSchema"] = input_schema;
+	tools.push_back(confirmation_approve);
+	Dictionary confirmation_reject;
+	confirmation_reject["name"] = "godot.confirmation.reject";
+	confirmation_reject["description"] = "Rejects the active write-tool confirmation request.";
+	confirmation_reject["inputSchema"] = input_schema;
+	tools.push_back(confirmation_reject);
+
 	Dictionary transaction_rollback;
 	transaction_rollback["name"] = "godot.transaction.rollback";
 	transaction_rollback["description"] = "Rolls back the active MCP transaction shell.";
 	transaction_rollback["inputSchema"] = input_schema;
 	tools.push_back(transaction_rollback);
+
 	Dictionary audit_export;
 	audit_export["name"] = "godot.audit.export";
 	audit_export["description"] = "Returns the in-memory MCP audit entries without authentication secrets.";
@@ -127,6 +153,10 @@ Dictionary MCPService::_make_status_result() const {
 	result["transaction_active"] = !transaction_id.is_empty();
 	result["transaction_id"] = transaction_id;
 	result["transaction_label"] = transaction_label;
+	result["require_confirmation"] = require_confirmation;
+	result["pending_confirmation"] = !pending_confirmation_id.is_empty();
+	result["pending_confirmation_id"] = pending_confirmation_id;
+	result["pending_confirmation_tool"] = pending_confirmation_tool;
 	result["transport"] = "streamable-http";
 	result["bind_address"] = bind_address;
 	result["port"] = port;
@@ -229,12 +259,94 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 		return response;
 	}
 
+	if (method == "godot.confirmation.approve" || method == "godot.confirmation.reject") {
+		const Dictionary params = p_request.get("params", Dictionary());
+		const String confirmation_id = params.get("confirmationId", "");
+		if (pending_confirmation_id.is_empty() || confirmation_id != pending_confirmation_id) {
+			return _make_error(request_id, -32021, "Confirmation request is not active.");
+		}
+		const String confirmed_tool = pending_confirmation_tool;
+		const bool approved = method == "godot.confirmation.approve";
+		pending_confirmation_id.clear();
+		pending_confirmation_tool.clear();
+		approved_confirmation_tool = approved ? confirmed_tool : String();
+		_append_audit(confirmed_tool, approved ? "approved" : "rejected", confirmation_id);
+		Dictionary result;
+		result["confirmationId"] = confirmation_id;
+		result["tool"] = confirmed_tool;
+		result["outcome"] = approved ? "approved" : "rejected";
+		Dictionary response;
+		response["jsonrpc"] = jsonrpc_version();
+		response["id"] = request_id;
+		response["result"] = result;
+		return response;
+	}
+
 	if (method == "tools/call") {
 		const Dictionary params = p_request.get("params", Dictionary());
 		const String name = params.get("name", "");
-		if (name != "godot.editor.status") {
+		const ToolDefinition *tool = _find_tool(name);
+		if (tool == nullptr) {
+			_append_audit(name, "rejected", "Tool is not registered.");
 			return _make_error(request_id, -32601, "Tool is not available.");
 		}
+		const bool has_approval = approved_confirmation_tool == name;
+		if (has_approval) {
+			approved_confirmation_tool.clear();
+		}
+		if (require_confirmation && tool->requires_confirmation && !has_approval) {
+			if (!pending_confirmation_id.is_empty()) {
+				return _make_error(request_id, -32022, "Another confirmation request is already pending.");
+			}
+			pending_confirmation_id = vformat("confirm-%d", Time::get_singleton()->get_ticks_msec());
+			pending_confirmation_tool = name;
+			_append_audit(name, "confirmation_required", pending_confirmation_id);
+			Dictionary error_response = _make_error(request_id, -32020, "Tool confirmation is required.");
+			Dictionary error = error_response["error"];
+			Dictionary confirmation_data;
+			confirmation_data["confirmationId"] = pending_confirmation_id;
+			confirmation_data["tool"] = name;
+			error["data"] = confirmation_data;
+			error_response["error"] = error;
+			return error_response;
+		}
+		if (name == "godot.scene.create") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String root_type = arguments.get("root_type", "Node");
+			if (scene_path.is_empty() || !scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || root_type.is_empty()) {
+				_append_audit(name, "rejected", "Invalid scene_path or root_type.");
+				return _make_error(request_id, -32602, "scene_path must be a res:// .tscn path and root_type must not be empty.");
+			}
+			Dictionary result;
+			result["accepted"] = true;
+			result["scene_path"] = scene_path;
+			result["root_type"] = root_type;
+			result["transaction_active"] = !transaction_id.is_empty();
+			_append_audit(name, "validated", scene_path);
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			return response;
+		}
+		if (name == "godot.editor.status") {
+			Dictionary content;
+			content["type"] = "text";
+			content["text"] = JSON::stringify(_make_status_result(), "  ");
+			Array contents;
+			contents.push_back(content);
+			Dictionary result;
+			result["content"] = contents;
+			result["structuredContent"] = _make_status_result();
+			Dictionary response;
+			response["jsonrpc"] = jsonrpc_version();
+			response["id"] = request_id;
+			response["result"] = result;
+			_append_activity("MCP godot.editor.status completed.");
+			return response;
+		}
+		return _make_error(request_id, -32601, "Tool execution is not implemented.");
 
 		Dictionary content;
 		content["type"] = "text";
@@ -378,7 +490,7 @@ void MCPService::_notification(int p_what) {
 	_clear_client();
 }
 
-Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token) {
+Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation) {
 	stop();
 	if (p_bind_address != "127.0.0.1" && p_bind_address != "::1") {
 		last_error = "Only loopback addresses are allowed.";
@@ -399,6 +511,7 @@ Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_po
 	port = server->get_local_port();
 	token = p_token.strip_edges();
 	authorization_value = String("Bearer ") + token;
+	require_confirmation = p_require_confirmation;
 	last_error.clear();
 	state = STATE_RUNNING;
 	set_process(true);
@@ -425,6 +538,11 @@ String MCPService::get_endpoint() const {
 
 MCPService::MCPService() {
 	set_process(false);
+
+	tool_registry.push_back({ "godot.editor.status", "Returns the state of the built-in Godot MCP server.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.scene.create", "Creates a new scene with an approved root type.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.resource.create", "Creates an approved Godot resource type.", "project-write", "medium", true });
+	tool_registry.push_back({ "godot.run.current_scene", "Runs the current scene through the editor debugger.", "run-control", "high", true });
 }
 
 MCPService::~MCPService() {

@@ -42,6 +42,14 @@ public:
 		STATE_ERROR,
 	};
 
+	struct ToolDefinition {
+		String name;
+		String description;
+		String permission;
+		String risk;
+		bool requires_confirmation = false;
+	};
+
 	struct AuditEntry {
 		String timestamp;
 		String method;
@@ -61,8 +69,13 @@ public:
 	int port = 0;
 	State state = STATE_DISABLED;
 	int request_count = 0;
+	Vector<ToolDefinition> tool_registry;
 	String transaction_id;
 	String transaction_label;
+	bool require_confirmation = true;
+	String pending_confirmation_id;
+	String pending_confirmation_tool;
+	String approved_confirmation_tool;
 
 	void _append_activity(const String &p_message);
 	void _append_audit(const String &p_method, const String &p_outcome, const String &p_detail);
@@ -72,6 +85,7 @@ public:
 	Dictionary _handle_rpc(const Dictionary &p_request);
 	Dictionary _make_status_result() const;
 	Array _get_tools() const;
+	const ToolDefinition *_find_tool(const String &p_name) const;
 	void _clear_client();
 
 protected:
@@ -79,7 +93,7 @@ protected:
 	void _notification(int p_what);
 
 public:
-	Error start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token);
+	Error start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation = true);
 	void stop();
 	bool is_running() const { return state == STATE_RUNNING; }
 	State get_state() const { return state; }
@@ -88,6 +102,9 @@ public:
 	String get_activity() const { return activity; }
 	int get_request_count() const { return request_count; }
 	Vector<AuditEntry> get_audit_entries() const { return audit_entries; }
+	bool has_pending_confirmation() const { return !pending_confirmation_id.is_empty(); }
+	String get_pending_confirmation_id() const { return pending_confirmation_id; }
+	String get_pending_confirmation_tool() const { return pending_confirmation_tool; }
 
 	MCPService();
 	~MCPService();

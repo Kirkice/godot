@@ -523,3 +523,9 @@ initialize / tools/list / godot.editor.status
 - [x] **P1-transaction-shell**：发布 `godot.transaction.begin`、`godot.transaction.commit`、`godot.transaction.rollback`；支持单活动事务、重复 begin/无活动 commit 错误、状态工具可见事务信息，并完成 HTTP 协议验证。
 - [x] **P1-confirmation-ui**：Control Center 增加 `Require confirmation for write tools` 设置，持久化到 EditorSettings，并将用户切换记录到 Activity；`mcp_bridge` 构建通过，服务状态 HTTP 200 验证通过。
 - [x] **P1-audit-export**：新增 `godot.audit.export`，仅导出内存审计字段（时间、方法、结果、脱敏详情），不导出 Token；构建通过并完成 HTTP 200 验证。
+- [x] **P1-tool-registry**：新增后端 `ToolDefinition` Registry，发布场景创建、资源创建和当前场景运行工具的权限、风险与确认元数据；`tools/list` 返回 `x-godot-permission`、`x-godot-risk` 和 `x-godot-requires-confirmation` 字段，构建验证通过。
+- [x] **P1-confirmation-handshake**：新增 `godot.confirmation.approve` / `godot.confirmation.reject`，确认请求生成 ID、状态工具显示待确认项、错误数据返回 confirmationId，并记录批准/拒绝审计事件；构建通过，错误 confirmationId 返回 -32021。
+- [x] **P1-confirmation-migration**：为旧 EditorSettings 增加一次性安全迁移；未初始化的确认策略强制默认开启并持久化 `confirmation_initialized=true`。验证：旧值 false 启动后迁移为 true，写入工具返回 -32020，status 显示 pending_confirmation=true，reject 返回 HTTP 200。
+- [x] **P1-scene-validation**：`godot.scene.create` 接入批准后的一次性执行授权和输入校验；仅接受 `res://` 下 `.tscn` 路径与非空 root_type，非法路径返回 -32602，合法请求返回 accepted 与事务状态；尚未写入磁盘场景文件。
+- [x] **P0-07-layout-redesign**：参考调试器工作区重构 MCP 面板：Server & Connection、Tools、Tool Details、Activity & Audit 四个区域按横向/纵向 SplitContainer 组织，分隔条可调；构建成功，编辑器启动并监听 `127.0.0.1:30100`，status 返回 HTTP 200。
+- [x] **P0-07-visual-style**：为四个工作区增加与调试器接近的深色背景、低对比边框、紧凑内边距、主题色标题和状态层级；Tools 改为双列 Tree，显示 Tool/State、分类层级、状态底色和悬浮说明；构建成功，编辑器启动并监听 `127.0.0.1:30100`，status 返回 HTTP 200。仍需人工截图确认最终观感。
