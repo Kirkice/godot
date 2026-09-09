@@ -66,8 +66,6 @@ public:
 	Ref<TCPServer> server;
 	Ref<StreamPeerTCP> client;
 	String client_buffer;
-	String token;
-	String authorization_value;
 	String bind_address;
 	String last_error;
 	String activity;
@@ -79,7 +77,6 @@ public:
 	String transaction_id;
 	String transaction_label;
 	bool require_confirmation = true;
-	bool require_token = true;
 	uint64_t connection_generation = 0;
 	uint64_t transaction_connection_generation = 0;
 	String pending_confirmation_id;
@@ -103,6 +100,9 @@ public:
 	const ToolDefinition *_find_tool(const String &p_name) const;
 	void _track_transaction_file(const String &p_path);
 	void _refresh_scene_after_mutation(const String &p_scene_path);
+	bool _is_project_path(const String &p_path) const;
+	Dictionary _node_to_dictionary(Node *p_node, bool p_recursive, int p_depth = 0) const;
+	Dictionary _tool_response(const Variant &p_id, const Dictionary &p_result) const;
 	void _clear_client();
 	void _on_camera_screenshot(int64_t p_width, int64_t p_height, const String &p_embedded_path, const Rect2i &p_rect, const String &p_output_path);
 
@@ -111,7 +111,7 @@ protected:
 	void _notification(int p_what);
 
 public:
-	Error start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation = true, bool p_require_token = true);
+	Error start(const String &p_bind_address, int p_port, bool p_auto_port, bool p_require_confirmation = true);
 	void stop();
 	bool is_running() const { return state == STATE_RUNNING; }
 	State get_state() const { return state; }

@@ -32,6 +32,8 @@
 #include "editor/docks/editor_dock.h"
 
 class Button;
+class ColorRect;
+class Panel;
 class CheckBox;
 class Label;
 class LineEdit;
@@ -60,6 +62,7 @@ class MCPControlCenter : public EditorDock {
 		ToolStatus status = TOOL_STATUS_PLANNED;
 	};
 
+	ColorRect *service_status_dot = nullptr;
 	Label *service_status = nullptr;
 	Label *service_hint = nullptr;
 	LineEdit *bind_address = nullptr;
@@ -67,7 +70,6 @@ class MCPControlCenter : public EditorDock {
 	CheckBox *auto_select_port = nullptr;
 	CheckBox *start_with_editor = nullptr;
 	LineEdit *endpoint = nullptr;
-	LineEdit *token = nullptr;
 	Button *enable_button = nullptr;
 	Button *start_button = nullptr;
 	Button *stop_button = nullptr;
@@ -81,13 +83,11 @@ class MCPControlCenter : public EditorDock {
 	TextEdit *tool_schema = nullptr;
 	TextEdit *activity_log = nullptr;
 	CheckBox *confirmation_required = nullptr;
-	CheckBox *token_required = nullptr;
 	Label *pending_confirmation = nullptr;
 
 	Vector<ToolInfo> tools;
 	MCPService *service = nullptr;
 	bool configured_enabled = false;
-	String generated_token;
 
 	void _register_settings();
 	void _load_settings();
@@ -112,10 +112,7 @@ class MCPControlCenter : public EditorDock {
 	void _tool_search_changed(const String &p_text);
 	void _tool_selected();
 	void _copy_endpoint();
-	void _copy_token();
-	void _regenerate_token();
 	void _confirmation_toggled(bool p_pressed);
-	void _token_required_toggled(bool p_pressed);
 	void _update_confirmation_view();
 
 protected:

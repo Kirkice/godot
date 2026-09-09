@@ -22,7 +22,7 @@ Godot MCP Server 直接集成在 Godot 编辑器中，不需要 Node.js、Python
 ```text
 Agent Runtime / MCP Client
         │
-        │ Streamable HTTP + Bearer Token
+        │ Streamable HTTP (loopback-only, no authentication)
         ▼
 <用户确认的 MCP Endpoint>
         │
@@ -32,13 +32,12 @@ Godot Editor MCPService
 
 ## 连接参数
 
-本 Skill 不预设项目路径、端口、地址或 Token。开始连接前，Agent 必须先确认以下信息；如果用户没有提供，应主动询问：
+本 Skill 不预设项目路径、端口或地址。开始连接前，Agent 必须先确认以下信息；如果用户没有提供，应主动询问：
 
 ```text
 1. Godot 编辑器当前使用的 MCP Endpoint 是什么？
 2. MCP Server 是否只监听本机地址？
 3. Agent 使用哪个 MCP Client 配置入口？
-4. Bearer Token 由用户通过 Secret、环境变量还是安全输入提供？
 5. 目标 Godot 项目路径是什么？
 ```
 
@@ -48,23 +47,22 @@ Godot Editor MCPService
 名称：<用户指定的 MCP Server 名称>
 Transport：Streamable HTTP
 URL：<用户确认的 MCP Endpoint>
-Header：Authorization: Bearer <安全获取的 Token>
+Header：无需认证 Header
 ```
 
 默认安全要求是只允许 loopback 地址；如果用户提供非 loopback 地址，Agent 必须提示安全风险并要求用户明确确认，不得自行放宽限制。
 
-不要改成局域网地址，不要要求 MCP Server 监听 `0.0.0.0`，也不要把 Bearer Token 发送给远程服务。当前本地开发默认可使用 loopback 免 Token 模式；Agent 仍必须确认 Endpoint 是 loopback，并提示本机其他进程可以调用 MCP。
+不要改成局域网地址，不要要求 MCP Server 监听 `0.0.0.0`。当前 MCP 仅允许 loopback 绑定，并提示本机其他进程可以调用 MCP。
 
 ## 配置 Agent MCP Client
 
-在 Agent 宿主支持自定义 MCP Server 的配置界面中，添加。名称、Endpoint 和 Token 使用用户确认的值：
+在 Agent 宿主支持自定义 MCP Server 的配置界面中，添加。名称和 Endpoint 使用用户确认的值，不添加认证 Header：
 
 ```text
 Server name: <用户指定名称>
 Transport: Streamable HTTP
 Endpoint: <用户确认 Endpoint>
-Header name: Authorization
-Header value: Bearer <安全提供的 Token>
+Headers: none
 ```
 
 如果 Agent 使用 JSON 配置，常见格式如下：
@@ -74,9 +72,7 @@ Header value: Bearer <安全提供的 Token>
   "mcpServers": {
     "godot": {
       "url": "<USER_CONFIRMED_MCP_ENDPOINT>",
-      "headers": {
-        "Authorization": "Bearer ${GODOT_MCP_TOKEN}"
-      }
+      "headers": {}
     }
   }
 }
@@ -90,9 +86,7 @@ Header value: Bearer <安全提供的 Token>
     "godot": {
       "transport": "streamable-http",
       "url": "<USER_CONFIRMED_MCP_ENDPOINT>",
-      "headers": {
-        "Authorization": "Bearer ${GODOT_MCP_TOKEN}"
-      }
+      "headers": {}
     }
   }
 }
@@ -103,10 +97,8 @@ Header value: Bearer <安全提供的 Token>
 ```text
 Transport：Streamable HTTP
 URL：<用户确认的 MCP Endpoint>
-认证：Authorization: Bearer <安全提供的 Token>
+Headers：none
 ```
-
-优先使用 Agent 宿主提供的 Secret、Environment 或 Credential 功能。不要将真实 Token 写入 Skill、Git 仓库、公开提示词或截图。
 
 ## 启动 Godot
 
@@ -122,29 +114,19 @@ URL：<用户确认的 MCP Endpoint>
 
 启动后调用 `tools/list` 和 `godot.editor.status`，以返回值确认 MCP 服务的实际 Endpoint、绑定地址和端口，不要从 Skill 中推测这些值。
 
-## 获取 Token
+## 认证
 
-Token 的存储位置和配置字段可能因 Godot 版本、操作系统和用户设置不同而变化。Agent 不得假定固定配置文件名、版本号或绝对路径。
+本地 MCP 已移除 Token、Bearer Authentication、Token 配置、Token 生成、复制和重置功能。Agent 连接时不需要提供 Token 或 Authorization Header。
 
-优先询问用户：
-
-```text
-请通过 Agent 的 Secret/安全输入提供 Godot MCP Bearer Token，或确认允许我从你指定的 Godot 编辑器配置中读取它。
-```
-
-只有用户明确提供配置文件路径并授权读取时，才可以读取该文件；读取后不得在 Agent 输出、日志、Skill 或聊天消息中打印完整 Token。若 Agent 支持环境变量，可使用：
+安全边界只保留 loopback 绑定：
 
 ```text
-GODOT_MCP_TOKEN=<token>
+127.0.0.1 或 ::1
 ```
 
-并在 MCP Client 的 Header 中使用：
+关闭认证后，本机其他进程也可能调用 MCP，因此不要将服务绑定到局域网或公网地址。
 
-```text
-Authorization: Bearer ${GODOT_MCP_TOKEN}
-```
-
-如果 Agent 不支持环境变量展开，使用其 Secret 配置，不要把 Token 固化到项目文件。
+如果实际运行的 Godot 版本仍要求 Token，说明编辑器没有使用最新构建产物，应先重新编译并重启编辑器；不要向用户反复索要 Token。
 
 ## 连接验证顺序
 
@@ -159,7 +141,6 @@ Agent 连接后必须按以下顺序判断：
 - Godot 项目路径；
 - Godot 编辑器是否已启动；
 - 是否允许启动或重启编辑器；
-- Bearer Token 的安全提供方式；
 - Agent 宿主的 MCP 配置格式。
 ```
 
@@ -226,14 +207,13 @@ endpoint = status 返回的实际 Endpoint
 
 `transaction_active` 是否为 true 取决于当前任务，不是连接成功的必要条件。
 
-### 3. 认证判断
+### 3. 连接判断
 
-- `200` 且返回 JSON-RPC 结果：连接和 Token 正常；
-- `401` 或认证错误：Token 缺失、错误或已失效；
+- `200` 且返回 JSON-RPC 结果：连接正常；
 - `403`：请求来源或绑定地址不符合本机限制；
 - 连接拒绝：Godot 未启动、MCP 未启用、用户确认的 Endpoint 不可达，或服务端口已被其他进程占用。
 
-不要通过关闭认证、改为非 loopback 绑定或暴露端口来绕过错误。
+MCP 不再提供 Token 认证，不要添加 Authorization Header，也不要向用户索要 Token。仍然必须保持 loopback-only，不得暴露端口。
 
 ## JSON-RPC 调用约定
 
@@ -242,7 +222,7 @@ HTTP 请求必须使用：
 ```text
 POST <用户确认的 MCP Endpoint>
 Content-Type: application/json
-Authorization: Bearer <安全提供的 Token>
+Headers: none
 ```
 
 请求结构：
@@ -338,8 +318,7 @@ godot.run.current_scene 已成功
 
 若 Godot 重启或 MCPService 断开：
 
-1. 重新读取 Token；
-2. 重新建立 HTTP MCP 连接；
+1. 重新建立 HTTP MCP 连接；
 3. 再次调用 `tools/list`；
 4. 再次调用 `godot.editor.status`；
 5. 不要假设旧事务、旧确认或旧连接仍然有效。
@@ -347,9 +326,7 @@ godot.run.current_scene 已成功
 ## 安全规则
 
 - 只连接 `127.0.0.1` 或 `::1`；
-- 使用 Bearer Token；
 - 不执行 shell、任意代码或任意文件操作；
-- 不读取或输出 Token；
 - 不绕过确认策略；
 - 不把 MCP 端口暴露到公网或局域网；
 - 不将 MCP 当作通用远程控制通道；
@@ -369,4 +346,3 @@ Camera Buffer capture: available/unavailable
 Main scene: verified/not verified
 ```
 
-不要在报告中显示 Bearer Token。

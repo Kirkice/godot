@@ -49,6 +49,7 @@
 #include "scene/gui/separator.h"
 #include "scene/gui/spin_box.h"
 #include "scene/gui/split_container.h"
+#include "scene/gui/tab_container.h"
 #include "scene/gui/text_edit.h"
 #include "scene/gui/tree.h"
 #include "scene/gui/box_container.h"
@@ -61,9 +62,7 @@ constexpr const char *SETTING_BIND_ADDRESS = "mcp/bridge/bind_address";
 constexpr const char *SETTING_PORT = "mcp/bridge/port";
 constexpr const char *SETTING_AUTO_PORT = "mcp/bridge/auto_select_port";
 constexpr const char *SETTING_START_WITH_EDITOR = "mcp/bridge/start_with_editor";
-constexpr const char *SETTING_TOKEN = "mcp/bridge/token";
 constexpr const char *SETTING_CONFIRMATION = "mcp/bridge/require_confirmation";
-constexpr const char *SETTING_REQUIRE_TOKEN = "mcp/bridge/require_token";
 constexpr const char *SETTING_CONFIRMATION_INITIALIZED = "mcp/bridge/confirmation_initialized";
 
 Label *create_section_title(const String &p_text) {
@@ -101,14 +100,6 @@ void add_section_accent(Control *p_parent, const Color &p_color) {
 	p_parent->add_child(accent);
 }
 
-String create_token() {
-	RandomNumberGenerator random;
-	String token;
-	for (int i = 0; i < 6; i++) {
-		token += vformat("%08x", random.randi());
-	}
-	return token;
-}
 } // namespace
 
 void MCPControlCenter::_notification(int p_what) {
@@ -133,9 +124,7 @@ void MCPControlCenter::_register_settings() {
 		editor_settings->set_initial_value(SETTING_PORT, 0);
 		editor_settings->set_initial_value(SETTING_AUTO_PORT, true);
 		editor_settings->set_initial_value(SETTING_START_WITH_EDITOR, false);
-		editor_settings->set_initial_value(SETTING_TOKEN, "");
 		editor_settings->set_initial_value(SETTING_CONFIRMATION, true);
-		editor_settings->set_initial_value(SETTING_REQUIRE_TOKEN, false);
 		editor_settings->set_initial_value(SETTING_CONFIRMATION_INITIALIZED, false);
 	}
 }
@@ -158,20 +147,6 @@ void MCPControlCenter::_load_settings() {
 		EditorSettings::save();
 	}
 	confirmation_required->set_pressed(confirmation_value);
-	token_required->set_pressed(editor_settings->get(SETTING_REQUIRE_TOKEN));
-
-	String saved_token = editor_settings->get(SETTING_TOKEN);
-	if (saved_token.is_empty()) {
-		// Token 仅用于本地 MCP 会话识别，活动日志和界面摘要都不能记录其明文。
-		if (generated_token.is_empty()) {
-			generated_token = create_token();
-		}
-		saved_token = generated_token;
-		editor_settings->set_manually(SETTING_TOKEN, saved_token);
-		editor_settings->mark_setting_changed(SETTING_TOKEN);
-		EditorSettings::save();
-	}
-	token->set_text(saved_token);
 	_update_endpoint();
 	_update_service_view();
 }
@@ -184,8 +159,6 @@ void MCPControlCenter::_save_settings() {
 	editor_settings->set(SETTING_AUTO_PORT, auto_select_port->is_pressed());
 	editor_settings->set(SETTING_START_WITH_EDITOR, start_with_editor->is_pressed());
 	editor_settings->set(SETTING_CONFIRMATION, confirmation_required->is_pressed());
-	editor_settings->set(SETTING_REQUIRE_TOKEN, token_required->is_pressed());
-	editor_settings->set(SETTING_TOKEN, token->get_text());
 }
 
 bool MCPControlCenter::_is_loopback_address(const String &p_address) const {
@@ -226,24 +199,21 @@ void MCPControlCenter::_update_service_view() {
 	const bool running = service != nullptr && service->is_running();
 	const bool failed = service != nullptr && service->get_state() == MCPService::STATE_ERROR;
 
-	service_status->set_text(running ? TTR("● Running") : failed ? TTR("● Error") : TTR("● Disabled"));
-	if (is_inside_tree()) {
-		service_status->add_theme_color_override(SceneStringName(font_color), get_theme_color(running ? SNAME("success_color") : failed ? SNAME("error_color") : SNAME("font_disabled_color"), EditorStringName(Editor)));
+	if (service_status_dot != nullptr) {
+		service_status_dot->set_color(get_theme_color(running ? SNAME("success_color") : failed ? SNAME("error_color") : SNAME("font_disabled_color"), EditorStringName(Editor)));
+	}
+	service_status->set_text(TTR("MCP"));
+
+	if (service_hint != nullptr) {
+		service_hint->set_text(failed ? service->get_last_error() : String());
+		service_hint->set_visible(failed);
 	}
 
-	if (!valid_address) {
-		service_hint->set_text(TTR("MCP currently accepts only loopback addresses (127.0.0.1 or ::1)."));
-	} else if (failed) {
-		service_hint->set_text(service->get_last_error());
-	} else if (running) {
-		service_hint->set_text(TTR("The built-in MCP service is listening on a local Streamable HTTP endpoint."));
-	} else {
-		service_hint->set_text(TTR("Enable MCP and start the local service."));
-	}
-
-	enable_button->set_text(configured_enabled ? TTR("Disable MCP") : TTR("Enable MCP"));
+	enable_button->set_button_icon(get_editor_theme_icon(configured_enabled ? SNAME("StatusSuccess") : SNAME("StatusWarning")));
 	start_button->set_disabled(!configured_enabled || !valid_address || running);
 	stop_button->set_disabled(!running);
+	start_button->set_button_icon(get_editor_theme_icon(SNAME("Play")));
+	stop_button->set_button_icon(get_editor_theme_icon(SNAME("Stop")));
 }
 
 void MCPControlCenter::_update_endpoint() {
@@ -323,7 +293,7 @@ void MCPControlCenter::_start_pressed() {
 	if (service == nullptr) {
 		return;
 	}
-	const Error err = service->start(bind_address->get_text(), (int)port->get_value(), auto_select_port->is_pressed(), token->get_text(), confirmation_required->is_pressed(), token_required->is_pressed());
+	const Error err = service->start(bind_address->get_text(), (int)port->get_value(), auto_select_port->is_pressed(), confirmation_required->is_pressed());
 	if (err == OK) {
 		_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), TTR("MCP service started.")));
 	} else {
@@ -370,16 +340,6 @@ void MCPControlCenter::_confirmation_toggled(bool p_pressed) {
 	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), p_pressed ? TTR("Confirmation required for write tools.") : TTR("Confirmation requirement disabled.")));
 }
 
-void MCPControlCenter::_token_required_toggled(bool p_pressed) {
-	if (!p_pressed && !_is_loopback_address(bind_address->get_text())) {
-		token_required->set_pressed(true);
-		_append_activity(TTR("Token bypass is only allowed on loopback addresses."));
-		return;
-	}
-	_save_settings();
-	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), p_pressed ? TTR("Bearer token required.") : TTR("Bearer token disabled for loopback only.")));
-}
-
 void MCPControlCenter::_tool_search_changed(const String &p_text) {
 	_rebuild_tool_tree();
 }
@@ -398,19 +358,6 @@ void MCPControlCenter::_tool_selected() {
 void MCPControlCenter::_copy_endpoint() {
 	DisplayServer::get_singleton()->clipboard_set(endpoint->get_text());
 	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), TTR("Endpoint copied to the clipboard.")));
-}
-
-void MCPControlCenter::_copy_token() {
-	DisplayServer::get_singleton()->clipboard_set(token->get_text());
-	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), TTR("Authentication token copied to the clipboard.")));
-}
-
-void MCPControlCenter::_regenerate_token() {
-	// 重新生成令牌后，后续 MCP 服务必须让旧会话失效，防止旧令牌继续被使用。
-	generated_token = create_token();
-	token->set_text(generated_token);
-	_save_settings();
-	_append_activity(vformat("%s  %s", Time::get_singleton()->get_time_string_from_system(), TTR("Authentication token regenerated.")));
 }
 
 void MCPControlCenter::set_service(MCPService *p_service) {
@@ -442,48 +389,58 @@ MCPControlCenter::MCPControlCenter() {
 	root->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	add_child(root);
 
-	HBoxContainer *header = memnew(HBoxContainer);
-	root->add_child(header);
-	apply_card_style(header, Color(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0));
+	TabContainer *tabs = memnew(TabContainer);
+	tabs->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	root->add_child(tabs);
 
-	Label *header_title = create_section_title(TTR("MCP Control Center"));
-	header_title->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	header->add_child(header_title);
-
+	HBoxContainer *toolbar = memnew(HBoxContainer);
+	toolbar->set_alignment(BoxContainer::ALIGNMENT_END);
+	toolbar->set_custom_minimum_size(Size2(0, 34) * EDSCALE);
+	root->add_child(toolbar);
+	service_status_dot = memnew(ColorRect);
+	service_status_dot->set_custom_minimum_size(Size2(8, 8) * EDSCALE);
+	toolbar->add_child(service_status_dot);
 	service_status = memnew(Label);
-	service_status->add_theme_font_size_override(SceneStringName(font_size), 14);
-	header->add_child(service_status);
-
+	service_status->set_text(TTR("MCP"));
+	toolbar->add_child(service_status);
 	enable_button = memnew(Button);
+	enable_button->set_flat(true);
+	enable_button->set_tooltip_text(TTR("Enable or disable MCP"));
 	enable_button->connect(SceneStringName(pressed), callable_mp(this, &MCPControlCenter::_enable_pressed));
-	header->add_child(enable_button);
-
+	toolbar->add_child(enable_button);
 	start_button = memnew(Button);
-	start_button->set_text(TTR("Start"));
+	start_button->set_flat(true);
+	start_button->set_tooltip_text(TTR("Start MCP service"));
 	start_button->connect(SceneStringName(pressed), callable_mp(this, &MCPControlCenter::_start_pressed));
-	header->add_child(start_button);
-
+	toolbar->add_child(start_button);
 	stop_button = memnew(Button);
-	stop_button->set_text(TTR("Stop"));
+	stop_button->set_flat(true);
+	stop_button->set_tooltip_text(TTR("Stop MCP service"));
 	stop_button->connect(SceneStringName(pressed), callable_mp(this, &MCPControlCenter::_stop_pressed));
-	header->add_child(stop_button);
+	toolbar->add_child(stop_button);
 
-	service_hint = memnew(Label);
-	service_hint->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	root->add_child(service_hint);
+	VBoxContainer *mcp_page = memnew(VBoxContainer);
+	mcp_page->set_name("MCP");
+	tabs->add_child(mcp_page);
 
-	root->add_child(memnew(HSeparator));
+	HSplitContainer *mcp_split = memnew(HSplitContainer);
+	mcp_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	mcp_split->set_split_offset(420 * EDSCALE);
+	mcp_page->add_child(mcp_split);
 
-	// 采用调试器式的可拖拽纵向栏：四个工作区并列，分别拥有独立分隔条。
+	VBoxContainer *tools_page = memnew(VBoxContainer);
+	tools_page->set_name("Tools");
+	tabs->add_child(tools_page);
+
 	HSplitContainer *main_split = memnew(HSplitContainer);
 	main_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	main_split->set_split_offset(250 * EDSCALE);
-	root->add_child(main_split);
+	main_split->set_split_offset(330 * EDSCALE);
+	tools_page->add_child(main_split);
 
 	PanelContainer *server_panel = memnew(PanelContainer);
-	server_panel->set_custom_minimum_size(Size2(250, 0) * EDSCALE);
+	server_panel->set_custom_minimum_size(Size2(380, 0) * EDSCALE);
 	apply_card_style(server_panel, Color(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0));
-	main_split->add_child(server_panel);
+	mcp_split->add_child(server_panel);
 
 	VBoxContainer *server_box = memnew(VBoxContainer);
 	server_panel->add_child(server_box);
@@ -527,10 +484,6 @@ MCPControlCenter::MCPControlCenter() {
 	confirmation_required->set_text(TTR("Confirm write tools"));
 	confirmation_required->connect(SceneStringName(toggled), callable_mp(this, &MCPControlCenter::_confirmation_toggled));
 	options_row->add_child(confirmation_required);
-	token_required = memnew(CheckBox);
-	token_required->set_text(TTR("Require Bearer token"));
-	token_required->connect(SceneStringName(toggled), callable_mp(this, &MCPControlCenter::_token_required_toggled));
-	options_row->add_child(token_required);
 
 	HBoxContainer *endpoint_row = memnew(HBoxContainer);
 	endpoint_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -545,32 +498,11 @@ MCPControlCenter::MCPControlCenter() {
 	copy_endpoint->connect(SceneStringName(pressed), callable_mp(this, &MCPControlCenter::_copy_endpoint));
 	endpoint_row->add_child(copy_endpoint);
 
-	HBoxContainer *token_row = memnew(HBoxContainer);
-	token_row->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	server_box->add_child(create_field_label(TTR("Authentication Token")));
-	server_box->add_child(token_row);
-	token = memnew(LineEdit);
-	token->set_secret(true);
-	token->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	token_row->add_child(token);
-	Button *copy_token = memnew(Button);
-	copy_token->set_text(TTR("Copy"));
-	copy_token->connect(SceneStringName(pressed), callable_mp(this, &MCPControlCenter::_copy_token));
-	token_row->add_child(copy_token);
-	Button *regenerate_token = memnew(Button);
-	regenerate_token->set_text(TTR("Regenerate"));
-	regenerate_token->connect(SceneStringName(pressed), callable_mp(this, &MCPControlCenter::_regenerate_token));
-	token_row->add_child(regenerate_token);
-
-	HSplitContainer *workspace_split = memnew(HSplitContainer);
-	workspace_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	workspace_split->set_split_offset(300 * EDSCALE);
-	main_split->add_child(workspace_split);
 
 	PanelContainer *tools_panel = memnew(PanelContainer);
 	tools_panel->set_custom_minimum_size(Size2(260, 0) * EDSCALE);
 	apply_card_style(tools_panel, Color(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0));
-	workspace_split->add_child(tools_panel);
+	main_split->add_child(tools_panel);
 	VBoxContainer *tools_box = memnew(VBoxContainer);
 	tools_panel->add_child(tools_box);
 	Label *tools_title = create_section_title(TTR("Tools"));
@@ -594,44 +526,52 @@ MCPControlCenter::MCPControlCenter() {
 	tool_tree->connect(SceneStringName(item_selected), callable_mp(this, &MCPControlCenter::_tool_selected));
 	tools_box->add_child(tool_tree);
 
-	VSplitContainer *details_activity_split = memnew(VSplitContainer);
-	details_activity_split->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	details_activity_split->set_split_offset(300 * EDSCALE);
-	workspace_split->add_child(details_activity_split);
-
 	PanelContainer *detail_panel = memnew(PanelContainer);
+	detail_panel->set_custom_minimum_size(Size2(520, 0) * EDSCALE);
 	detail_panel->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	apply_card_style(detail_panel, Color(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0));
-	details_activity_split->add_child(detail_panel);
-	VBoxContainer *detail_box = memnew(VBoxContainer);
-	detail_panel->add_child(detail_box);
+	main_split->add_child(detail_panel);
+	HSplitContainer *detail_schema_split = memnew(HSplitContainer);
+	detail_schema_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	detail_schema_split->set_split_offset(420 * EDSCALE);
+	detail_panel->add_child(detail_schema_split);
+
+	VBoxContainer *detail_info_box = memnew(VBoxContainer);
+	detail_info_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	detail_schema_split->add_child(detail_info_box);
 	Label *details_title = create_section_title(TTR("Tool Details"));
 	details_title->add_theme_color_override(SceneStringName(font_color), Color(0.76, 0.68, 0.94));
-	detail_box->add_child(details_title);
+	detail_info_box->add_child(details_title);
 	tool_name = create_section_title(TTR("Select a tool"));
-	detail_box->add_child(tool_name);
+	detail_info_box->add_child(tool_name);
 	tool_name->add_theme_color_override(SceneStringName(font_color), Color(0.82, 0.86, 0.94));
 	tool_status = memnew(Label);
-	detail_box->add_child(tool_status);
+	detail_info_box->add_child(tool_status);
 	tool_description = memnew(Label);
 	tool_description->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	detail_box->add_child(tool_description);
+	detail_info_box->add_child(tool_description);
 	tool_permission = memnew(Label);
 	tool_permission->add_theme_color_override(SceneStringName(font_color), Color(0.62, 0.76, 0.90));
-	detail_box->add_child(tool_permission);
+	detail_info_box->add_child(tool_permission);
 	tool_risk = memnew(Label);
 	tool_risk->add_theme_color_override(SceneStringName(font_color), Color(0.90, 0.72, 0.48));
-	detail_box->add_child(tool_risk);
-	detail_box->add_child(create_field_label(TTR("Input JSON Schema")));
+	detail_info_box->add_child(tool_risk);
+
+	VBoxContainer *schema_box = memnew(VBoxContainer);
+	schema_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	detail_schema_split->add_child(schema_box);
+	Label *schema_title = create_section_title(TTR("Input JSON Schema"));
+	schema_title->add_theme_color_override(SceneStringName(font_color), Color(0.62, 0.70, 0.82));
+	schema_box->add_child(schema_title);
 	tool_schema = memnew(TextEdit);
 	tool_schema->set_editable(false);
 	tool_schema->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	detail_box->add_child(tool_schema);
+	schema_box->add_child(tool_schema);
 
 	PanelContainer *activity_panel = memnew(PanelContainer);
-	activity_panel->set_custom_minimum_size(Size2(0, 130) * EDSCALE);
+	activity_panel->set_custom_minimum_size(Size2(360, 0) * EDSCALE);
 	apply_card_style(activity_panel, Color(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0));
-	details_activity_split->add_child(activity_panel);
+	mcp_split->add_child(activity_panel);
 	VBoxContainer *activity_box = memnew(VBoxContainer);
 	activity_panel->add_child(activity_box);
 	Label *activity_title = create_section_title(TTR("Activity & Audit"));
@@ -646,19 +586,22 @@ MCPControlCenter::MCPControlCenter() {
 	activity_box->add_child(pending_confirmation);
 
 	set_process(true);
-	tools.push_back({ SNAME("Project & Diagnostics"), SNAME("godot.editor.status"), TTR("Returns the MCP editor status and local endpoint configuration."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\",\n  \"properties\": {}\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Scene Authoring"), SNAME("godot.scene.create"), TTR("Creates a new scene with a typed root node."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"scene_path\", \"root_type\"]\n}", TOOL_STATUS_PLANNED });
-	tools.push_back({ SNAME("Scene Authoring"), SNAME("godot.scene.add_node"), TTR("Adds a typed child node to an existing scene."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"scene_path\", \"parent_path\", \"node_type\"]\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Resources & Assets"), SNAME("godot.resource.create"), TTR("Creates an approved Godot resource type."), TTR("Project write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"resource_type\"]\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Run & Debug"), SNAME("godot.run.current_scene"), TTR("Runs the current scene through the editor debugger."), TTR("Run control"), TTR("High"), "{\n  \"type\": \"object\",\n  \"properties\": {}\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Capture & Validation"), SNAME("godot.capture.editor_view"), TTR("Captures the active editor viewport for visual validation."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\",\n  \"properties\": {}\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.add_3d_node"), TTR("Adds a controlled 3D node such as mesh, camera or light."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_transform"), TTR("Sets position, rotation and scale for a 3D node."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_property"), TTR("Sets an approved camera or light property."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_mesh"), TTR("Assigns a controlled primitive mesh."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Scene 3D Authoring"), SNAME("godot.scene.set_material"), TTR("Assigns a controlled StandardMaterial3D color."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Capture & Validation"), SNAME("godot.run.capture_view"), TTR("Captures the running/editor viewport for visual validation."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
-	tools.push_back({ SNAME("Transactions & Security"), SNAME("godot.transaction.begin"), TTR("Starts a named MCP transaction for grouped editor changes."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\",\n  \"required\": [\"label\"]\n}", TOOL_STATUS_PLANNED });
+	tools.push_back({ SNAME("Project"), SNAME("godot.project.inspect"), TTR("Inspects project state and configuration."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Project"), SNAME("godot.project.scan"), TTR("Scans project files."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+
+
+
+
+	tools.push_back({ SNAME("Scene"), SNAME("godot.scene.mutate"), TTR("Applies a batch of controlled scene operations."), TTR("Scene write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scripting"), SNAME("godot.script.inspect"), TTR("Reads and validates a project script."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Scripting"), SNAME("godot.script.edit"), TTR("Creates, updates, or attaches a project script."), TTR("Project write"), TTR("High"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Resources"), SNAME("godot.resource.inspect"), TTR("Inspects a project resource."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Resources"), SNAME("godot.resource.mutate"), TTR("Creates or updates a controlled resource."), TTR("Project write"), TTR("Medium"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Run"), SNAME("godot.run"), TTR("Starts, stops, or reports the running game."), TTR("Run control"), TTR("High"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Run"), SNAME("godot.run.diagnostics"), TTR("Returns runtime diagnostics."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Validation"), SNAME("godot.visual.capture"), TTR("Captures an editor, game, or camera view."), TTR("Read-only"), TTR("Low"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Validation"), SNAME("godot.test"), TTR("Runs project validation tests."), TTR("Run control"), TTR("High"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
+	tools.push_back({ SNAME("Validation"), SNAME("godot.build"), TTR("Builds or exports the project."), TTR("Project write"), TTR("High"), "{\n  \"type\": \"object\"\n}", TOOL_STATUS_IMPLEMENTED });
 
 	_load_settings();
 	_rebuild_tool_tree();

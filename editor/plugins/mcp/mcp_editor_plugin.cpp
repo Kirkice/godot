@@ -58,10 +58,14 @@ MCPBridgeEditorPlugin::~MCPBridgeEditorPlugin() {
 	if (control_center != nullptr) {
 		EditorDockManager::get_singleton()->remove_dock(control_center);
 		memdelete(control_center);
+		control_center = nullptr;
 	}
 	if (service != nullptr) {
 		service->stop();
-		remove_child(service);
+		if (service->get_parent() == this) {
+			remove_child(service);
+		}
 		memdelete(service);
+		service = nullptr;
 	}
 }

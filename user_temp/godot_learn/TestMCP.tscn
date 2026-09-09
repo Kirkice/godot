@@ -54,7 +54,8 @@ spot_attenuation = 1.17
 [node name="Camera" type="Camera3D" parent="." unique_id=1482889753]
 transform = Transform3D(1, 0, 0, 0, 0.95105654, 0.309017, 0, -0.309017, 0.95105654, 0, 5, 12)
 current = true
-fov = 50.0
+fov = 51.0
+near = 0.25
 
 [node name="Sphere2" type="MeshInstance3D" parent="." unique_id=566032960]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 1, 0)

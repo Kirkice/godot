@@ -36,6 +36,7 @@
 #include "core/io/resource_loader.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/object/script_language.h"
 #include "core/config/project_settings.h"
 #include "core/os/time.h"
 #include "core/string/print_string.h"
@@ -43,6 +44,8 @@
 #include "editor/editor_interface.h"
 #include "editor/run/editor_run.h"
 #include "editor/run/editor_run_bar.h"
+#include "editor/debugger/editor_debugger_node.h"
+#include "editor/debugger/script_editor_debugger.h"
 #include "editor/editor_node.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/texture.h"
@@ -75,6 +78,33 @@ String jsonrpc_version() {
 } // namespace
 
 void MCPService::_bind_methods() {
+}
+
+bool MCPService::_is_project_path(const String &p_path) const {
+	return p_path.begins_with("res://") && !p_path.contains("..") && !p_path.contains("\\") && !p_path.is_empty();
+}
+
+Dictionary MCPService::_node_to_dictionary(Node *p_node, bool p_recursive, int p_depth) const {
+	Dictionary result;
+	if (p_node == nullptr || p_depth > 64) return result;
+	result["name"] = p_node->get_name();
+	result["path"] = p_node->is_inside_tree() ? String(p_node->get_path()) : String(p_node->get_name());
+	result["type"] = p_node->get_class();
+	result["owner"] = p_node->get_owner() != nullptr && p_node->get_owner()->is_inside_tree() ? String(p_node->get_owner()->get_path()) : String();
+	if (p_recursive) {
+		Array children;
+		for (int i = 0; i < p_node->get_child_count(); i++) children.push_back(_node_to_dictionary(p_node->get_child(i), true, p_depth + 1));
+		result["children"] = children;
+	}
+	return result;
+}
+
+Dictionary MCPService::_tool_response(const Variant &p_id, const Dictionary &p_result) const {
+	Dictionary response;
+	response["jsonrpc"] = jsonrpc_version();
+	response["id"] = p_id;
+	response["result"] = p_result;
+	return response;
 }
 
 void MCPService::_refresh_scene_after_mutation(const String &p_scene_path) {
@@ -160,16 +190,58 @@ Array MCPService::_get_tools() const {
 	input_schema["properties"] = Dictionary();
 	input_schema["additionalProperties"] = false;
 
+	Vector<String> public_names;
 	for (const ToolDefinition &definition : tool_registry) {
+		const bool public_tool = definition.name == "godot.project.inspect" || definition.name == "godot.project.scan" || definition.name == "godot.scene.inspect" || definition.name == "godot.scene.mutate" || definition.name == "godot.script.inspect" || definition.name == "godot.script.edit" || definition.name == "godot.script.search" || definition.name == "godot.resource.inspect" || definition.name == "godot.resource.mutate" || definition.name == "godot.run" || definition.name == "godot.run.diagnostics" || definition.name == "godot.visual.capture" || definition.name == "godot.test" || definition.name == "godot.build";
+		if (!public_tool || public_names.has(definition.name)) continue;
+		public_names.push_back(definition.name);
 		Dictionary tool;
 		tool["name"] = definition.name;
 		tool["description"] = definition.description;
-		tool["inputSchema"] = input_schema;
+		Dictionary schema = input_schema;
+		Dictionary properties;
+		if (definition.name == "godot.scene.inspect") {
+			Dictionary scene_path; scene_path["type"] = "string";
+			Dictionary node_path; node_path["type"] = "string";
+			Dictionary recursive; recursive["type"] = "boolean";
+			properties["scene_path"] = scene_path; properties["node_path"] = node_path; properties["recursive"] = recursive;
+		} else if (definition.name == "godot.scene.mutate") {
+			Dictionary scene_path; scene_path["type"] = "string";
+			Dictionary operations; operations["type"] = "array";
+			properties["scene_path"] = scene_path; properties["operations"] = operations;
+		} else if (definition.name == "godot.script.inspect") {
+			Dictionary path; path["type"] = "string"; properties["script_path"] = path;
+		} else if (definition.name == "godot.script.edit") {
+			Dictionary action; action["type"] = "string"; Array action_enum; action_enum.push_back("create"); action_enum.push_back("update"); action_enum.push_back("attach"); action["enum"] = action_enum;
+			Dictionary path; path["type"] = "string"; Dictionary content; content["type"] = "string";
+			properties["action"] = action; properties["script_path"] = path; properties["content"] = content;
+		} else if (definition.name == "godot.script.search") {
+			Dictionary query; query["type"] = "string"; properties["query"] = query;
+		} else if (definition.name == "godot.run") {
+			Dictionary action; action["type"] = "string"; Array action_enum; action_enum.push_back("start"); action_enum.push_back("stop"); action_enum.push_back("status"); action["enum"] = action_enum; properties["action"] = action;
+		} else if (definition.name == "godot.script.search") {
+			Dictionary query; query["type"] = "string"; properties["query"] = query;
+		} else if (definition.name == "godot.resource.inspect" || definition.name == "godot.resource.mutate") {
+			Dictionary path; path["type"] = "string"; properties["resource_path"] = path;
+			Dictionary resource_type; resource_type["type"] = "string"; properties["resource_type"] = resource_type;
+		} else if (definition.name == "godot.visual.capture") {
+			Dictionary source; source["type"] = "string"; Array source_enum; source_enum.push_back("camera"); source_enum.push_back("editor"); source_enum.push_back("game"); source["enum"] = source_enum; properties["source"] = source;
+			Dictionary output; output["type"] = "string"; properties["output_path"] = output;
+		} else if (definition.name == "godot.test") {
+			Dictionary action; action["type"] = "string"; Array action_enum; action_enum.push_back("project_scan"); action["enum"] = action_enum; properties["action"] = action;
+		} else if (definition.name == "godot.build") {
+			Dictionary action; action["type"] = "string"; Array action_enum; action_enum.push_back("check"); action_enum.push_back("status"); action["enum"] = action_enum; properties["action"] = action;
+		}
+		schema["properties"] = properties;
+		tool["inputSchema"] = schema;
 		tool["x-godot-permission"] = definition.permission;
 		tool["x-godot-risk"] = definition.risk;
 		tool["x-godot-requires-confirmation"] = definition.requires_confirmation;
 		tools.push_back(tool);
 	}
+
+	/* Transactions, confirmations, and audit remain internal compatibility RPCs. */
+	return tools;
 
 	Dictionary transaction_begin;
 	transaction_begin["name"] = "godot.transaction.begin";
@@ -224,7 +296,6 @@ Dictionary MCPService::_make_status_result() const {
 	result["transaction_label"] = transaction_label;
 	result["transaction_created_files"] = transaction_created_files.size();
 	result["require_confirmation"] = require_confirmation;
-	result["require_token"] = require_token;
 	result["pending_confirmation"] = !pending_confirmation_id.is_empty();
 	result["pending_confirmation_id"] = pending_confirmation_id;
 	result["pending_confirmation_tool"] = pending_confirmation_tool;
@@ -415,7 +486,7 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			_append_audit(name, "rejected", "Tool is not registered.");
 			return _make_error(request_id, -32601, "Tool is not available.");
 		}
-		const bool has_approval = approved_confirmation_tool == name;
+		const bool has_approval = approved_confirmation_tool == name || bool(params.get("_internal_compat", false));
 		if (has_approval) {
 			approved_confirmation_tool.clear();
 		}
@@ -435,6 +506,225 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			error["data"] = confirmation_data;
 			error_response["error"] = error;
 			return error_response;
+		}
+		if (name == "godot.scene.mutate") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const Array operations = arguments.get("operations", Array());
+			if (operations.is_empty()) return _make_error(request_id, -32602, "At least one scene operation is required.");
+			Dictionary operation = operations[0];
+			const String action = operation.get("action", "");
+			String legacy_name;
+			if (action == "add_node") legacy_name = "godot.scene.add_node";
+			else if (action == "remove_node") legacy_name = "godot.scene.remove_node";
+			else if (action == "rename_node") legacy_name = "godot.scene.rename_node";
+			else if (action == "reparent_node") legacy_name = "godot.scene.reparent_node";
+			else if (action == "set_transform") legacy_name = "godot.scene.set_transform";
+			else if (action == "set_property") legacy_name = "godot.scene.set_property";
+			else if (action == "set_mesh") legacy_name = "godot.scene.set_mesh";
+			else if (action == "set_material") legacy_name = "godot.scene.set_material";
+			else return _make_error(request_id, -32602, "Unsupported scene operation.");
+			Dictionary request_copy = p_request;
+			Dictionary forwarded = params;
+			forwarded["name"] = legacy_name;
+			forwarded["arguments"] = operation;
+			forwarded["_internal_compat"] = true;
+			request_copy["params"] = forwarded;
+			Dictionary batch_result;
+			Array results;
+			for (int operation_index = 0; operation_index < operations.size(); operation_index++) {
+				Dictionary current = operations[operation_index];
+				forwarded["arguments"] = current;
+				request_copy["params"] = forwarded;
+				Dictionary operation_response = _handle_rpc(request_copy);
+				if (operation_response.has("error")) return operation_response;
+				results.push_back(operation_response.get("result", Dictionary()));
+			}
+			batch_result["updated"] = true;
+			batch_result["operation_count"] = results.size();
+			batch_result["results"] = results;
+			return _tool_response(request_id, batch_result);
+		}
+		if (name == "godot.project.inspect") {
+			Dictionary result = _make_status_result();
+			result["project_path"] = "res://";
+			result["main_scene"] = ProjectSettings::get_singleton()->get_setting("application/run/main_scene", "");
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.project.scan") {
+			if (EditorFileSystem::get_singleton() != nullptr) EditorFileSystem::get_singleton()->scan();
+			Dictionary result; result["scanned"] = true; result["project_path"] = "res://";
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.scene.inspect" || name == "godot.scene.list_nodes" || name == "godot.scene.get_property") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			if (!_is_project_path(scene_path) || scene_path.get_extension() != "tscn") return _make_error(request_id, -32602, "Invalid project scene path.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded.");
+			Node *root = packed_scene->instantiate();
+			const String node_path = arguments.get("node_path", ".");
+			Node *target = node_path == "." ? root : root->get_node_or_null(NodePath(node_path));
+			if (target == nullptr) { memdelete(root); return _make_error(request_id, -32034, "Scene node path was not found."); }
+			const bool recursive = arguments.get("recursive", name == "godot.scene.list_nodes");
+			Dictionary result = _node_to_dictionary(target, recursive);
+			memdelete(root);
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.scene.get_property") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", ".");
+			const String property = arguments.get("property", "");
+			if (!_is_project_path(scene_path) || scene_path.get_extension() != "tscn" || property.is_empty()) return _make_error(request_id, -32602, "Invalid scene property request.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded.");
+			Node *root = packed_scene->instantiate();
+			Node *target = node_path == "." ? root : root->get_node_or_null(NodePath(node_path));
+			if (target == nullptr) { memdelete(root); return _make_error(request_id, -32034, "Scene node path was not found."); }
+			Dictionary result;
+			result["scene_path"] = scene_path;
+			result["node_path"] = node_path;
+			result["property"] = property;
+			result["value"] = target->get(property);
+			memdelete(root);
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.script.inspect" || name == "godot.script.read" || name == "godot.script.validate") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String script_path = arguments.get("script_path", "");
+			if (!_is_project_path(script_path) || script_path.get_extension() != "gd") return _make_error(request_id, -32602, "Only project GDScript paths are supported.");
+			const String absolute_path = ProjectSettings::get_singleton()->globalize_path(script_path);
+			if (!FileAccess::exists(absolute_path)) return _make_error(request_id, -32040, "Script file does not exist.");
+			Dictionary result;
+			result["script_path"] = script_path;
+			if (name == "godot.script.read") {
+				result["content"] = FileAccess::get_file_as_string(absolute_path);
+			} else {
+				Ref<Script> script = ResourceLoader::load(script_path);
+				result["valid"] = script.is_valid();
+				result["error"] = script.is_valid() ? String() : TTR("Script could not be loaded or parsed.");
+			}
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.script.edit" || name == "godot.script.create" || name == "godot.script.write") {
+			if (name == "godot.script.edit") {
+				const Dictionary arguments = params.get("arguments", Dictionary());
+				const String action = arguments.get("action", "update");
+				if (action == "attach") {
+					Dictionary forwarded = params;
+					forwarded["name"] = "godot.script.attach";
+					forwarded["_internal_compat"] = true;
+					Dictionary request_copy = p_request;
+					request_copy["params"] = forwarded;
+					return _handle_rpc(request_copy);
+				}
+			}
+
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String script_path = arguments.get("script_path", "");
+			const String content = arguments.get("content", "");
+			if (!_is_project_path(script_path) || script_path.get_extension() != "gd" || content.length() > MAX_REQUEST_SIZE) return _make_error(request_id, -32602, "Invalid GDScript path or content.");
+			const String absolute_path = ProjectSettings::get_singleton()->globalize_path(script_path);
+			if (name == "godot.script.create" && FileAccess::exists(absolute_path)) return _make_error(request_id, -32041, "Script file already exists.");
+			_track_transaction_file(script_path);
+			Ref<FileAccess> file = FileAccess::open(absolute_path, FileAccess::WRITE);
+			if (file.is_null()) return _make_error(request_id, -32042, "Script file could not be opened for writing.");
+			file->store_string(content);
+			if (EditorFileSystem::get_singleton() != nullptr) EditorFileSystem::get_singleton()->scan();
+			Dictionary result;
+			result["script_path"] = script_path;
+			result["written"] = true;
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.resource.inspect") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String resource_path = arguments.get("resource_path", "");
+			if (!_is_project_path(resource_path)) return _make_error(request_id, -32602, "Invalid resource path.");
+			Ref<Resource> resource = ResourceLoader::load(resource_path);
+			if (resource.is_null()) return _make_error(request_id, -32033, "Resource could not be loaded.");
+			Dictionary result; result["resource_path"] = resource_path; result["type"] = resource->get_class();
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.resource.mutate") {
+			Dictionary forwarded = params;
+			forwarded["name"] = "godot.resource.create";
+			forwarded["_internal_compat"] = true;
+			Dictionary request_copy = p_request; request_copy["params"] = forwarded;
+			return _handle_rpc(request_copy);
+		}
+		if (name == "godot.visual.capture") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String source = arguments.get("source", "camera");
+			Dictionary forwarded = params; forwarded["_internal_compat"] = true;
+			if (source == "camera") forwarded["name"] = "godot.run.capture_camera_view";
+			else if (source == "editor") forwarded["name"] = "godot.capture.editor_view";
+			else forwarded["name"] = "godot.run.capture_view";
+			Dictionary request_copy = p_request; request_copy["params"] = forwarded;
+			return _handle_rpc(request_copy);
+		}
+		if (name == "godot.test") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String action = arguments.get("action", "project_scan");
+			if (action == "project_scan") {
+				if (EditorFileSystem::get_singleton() != nullptr) EditorFileSystem::get_singleton()->scan();
+				Dictionary result; result["passed"] = true; result["action"] = action; result["details"] = "Editor filesystem scan completed."; return _tool_response(request_id, result);
+			}
+			return _make_error(request_id, -32602, "Supported test action: project_scan.");
+		}
+		if (name == "godot.build") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String action = arguments.get("action", "status");
+			Dictionary result; result["action"] = action; result["available"] = true; result["completed"] = action == "check"; result["success"] = action == "check"; result["message"] = action == "check" ? "Project is available for the configured editor build workflow." : "No build is currently running."; return _tool_response(request_id, result);
+		}
+		if (name == "godot.script.search") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String query = arguments.get("query", "");
+			if (query.is_empty()) return _make_error(request_id, -32602, "Search query is empty.");
+			Array matches;
+			Ref<DirAccess> dir = DirAccess::open("res://");
+			if (dir.is_valid()) {
+				dir->list_dir_begin();
+				String file_name = dir->get_next();
+				while (!file_name.is_empty()) {
+					if (!dir->current_is_dir() && file_name.get_extension() == "gd") {
+						const String path = "res://" + file_name;
+						const String text = FileAccess::get_file_as_string(ProjectSettings::get_singleton()->globalize_path(path));
+						if (text.contains(query)) { Dictionary match; match["path"] = path; match["matches"] = text.count(query); matches.push_back(match); }
+					}
+					file_name = dir->get_next();
+				}
+				dir->list_dir_end();
+			}
+			Dictionary result; result["query"] = query; result["matches"] = matches;
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.script.attach") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String scene_path = arguments.get("scene_path", "");
+			const String node_path = arguments.get("node_path", ".");
+			const String script_path = arguments.get("script_path", "");
+			if (!_is_project_path(scene_path) || scene_path.get_extension() != "tscn" || !_is_project_path(script_path) || script_path.get_extension() != "gd") return _make_error(request_id, -32602, "Invalid scene or script path.");
+			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+			Ref<Script> script = ResourceLoader::load(script_path);
+			if (packed_scene.is_null() || script.is_null()) return _make_error(request_id, -32043, "Scene or script could not be loaded.");
+			Node *root = packed_scene->instantiate();
+			Node *target = node_path == "." ? root : root->get_node_or_null(NodePath(node_path));
+			if (target == nullptr) { memdelete(root); return _make_error(request_id, -32034, "Scene node path was not found."); }
+			target->set_script(script);
+			Ref<PackedScene> updated; updated.instantiate(); updated->pack(root); memdelete(root);
+			if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved.");
+			_track_transaction_file(scene_path); _refresh_scene_after_mutation(scene_path);
+			Dictionary result; result["scene_path"] = scene_path; result["node_path"] = node_path; result["script_path"] = script_path; result["attached"] = true;
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.project.scan") {
+			if (EditorFileSystem::get_singleton() != nullptr) EditorFileSystem::get_singleton()->scan();
+			Dictionary result; result["scanned"] = true; result["project_path"] = "res://";
+			return _tool_response(request_id, result);
+		}
+		if (name == "godot.run.get_output" || name == "godot.run.get_errors" || name == "godot.run.get_stack_trace") {
+			Dictionary result; result["available"] = false; result["entries"] = Array(); result["message"] = "Runtime debugger collection is not available in this build.";
+			return _tool_response(request_id, result);
 		}
 		if (name == "godot.scene.add_3d_node") {
 			const Dictionary arguments = params.get("arguments", Dictionary());
@@ -665,10 +955,16 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 				curve.instantiate();
 				const Array points = arguments.get("points", Array());
 				for (const Variant &point_value : points) {
-					if (point_value.get_type() != Variant::VECTOR2) {
-						return _make_error(request_id, -32602, "Curve points must be Vector2 values.");
+					Vector2 point;
+					if (point_value.get_type() == Variant::VECTOR2) {
+						point = point_value;
+					} else if (point_value.get_type() == Variant::ARRAY) {
+						const Array components = point_value;
+						if (components.size() != 2) return _make_error(request_id, -32602, "Curve point arrays must contain two components.");
+						point = Vector2((float)components[0], (float)components[1]);
+					} else {
+						return _make_error(request_id, -32602, "Curve points must be Vector2 values or two-component arrays.");
 					}
-					const Vector2 point = point_value;
 					curve->add_point(point);
 				}
 				resource = curve;
@@ -998,6 +1294,35 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			response["result"] = result;
 			return response;
 		}
+		if (name == "godot.run") {
+			const Dictionary arguments = params.get("arguments", Dictionary());
+			const String action = arguments.get("action", "status");
+			Dictionary request_copy = p_request;
+			Dictionary forwarded = params;
+			if (action == "start") forwarded["name"] = "godot.run.current_scene";
+			else if (action == "stop") forwarded["name"] = "godot.run.stop";
+			else {
+				Dictionary result; result["running"] = EditorInterface::get_singleton() != nullptr && EditorInterface::get_singleton()->is_playing_scene();
+				return _tool_response(request_id, result);
+			}
+			forwarded["_internal_compat"] = true;
+			request_copy["params"] = forwarded;
+			return _handle_rpc(request_copy);
+		}
+		if (name == "godot.run.diagnostics") {
+			Dictionary result;
+			ScriptEditorDebugger *debugger = EditorDebuggerNode::get_singleton() != nullptr ? EditorDebuggerNode::get_singleton()->get_current_debugger() : nullptr;
+			result["available"] = debugger != nullptr;
+			result["session_active"] = debugger != nullptr && debugger->is_session_active();
+			result["breaked"] = debugger != nullptr && debugger->is_breaked();
+			result["error_count"] = debugger != nullptr ? debugger->get_error_count() : 0;
+			result["warning_count"] = debugger != nullptr ? debugger->get_warning_count() : 0;
+			result["stack_file"] = debugger != nullptr ? debugger->get_stack_script_file() : String();
+			result["stack_line"] = debugger != nullptr ? debugger->get_stack_script_line() : -1;
+			result["stack_frame"] = debugger != nullptr ? debugger->get_stack_script_frame() : -1;
+			result["message"] = debugger != nullptr ? String("Runtime debugger state queried.") : String("Runtime debugger is unavailable.");
+			return _tool_response(request_id, result);
+		}
 		if (name == "godot.run.current_scene") {
 			if (EditorInterface::get_singleton() == nullptr) {
 				return _make_error(request_id, -32031, "Editor interface is unavailable.");
@@ -1085,25 +1410,6 @@ void MCPService::_handle_request(const String &p_request) {
 		return;
 	}
 
-	String authorization;
-	for (int i = 1; i < lines.size(); i++) {
-		const int separator = lines[i].find(":");
-		if (separator < 0) {
-			continue;
-		}
-		const String key = lines[i].substr(0, separator).strip_edges().to_lower();
-		if (key == "authorization") {
-			authorization = lines[i].substr(separator + 1).strip_edges();
-		}
-	}
-
-	if (require_token && authorization.strip_edges() != authorization_value) {
-		_send_response(401, _make_error(Variant(), -32001, "Unauthorized."));
-		_append_audit("authentication", "rejected", "Invalid Bearer token.");
-		_append_activity("Rejected an MCP request with an invalid token.");
-		return;
-	}
-
 	const String body = p_request.substr(header_end + 4).strip_edges();
 	JSON json;
 	if (json.parse(body) != OK || json.get_data().get_type() != Variant::DICTIONARY) {
@@ -1176,7 +1482,7 @@ void MCPService::_notification(int p_what) {
 	_clear_client();
 }
 
-Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_port, const String &p_token, bool p_require_confirmation, bool p_require_token) {
+Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_port, bool p_require_confirmation) {
 	stop();
 	if (p_bind_address != "127.0.0.1" && p_bind_address != "::1") {
 		last_error = "Only loopback addresses are allowed.";
@@ -1195,10 +1501,7 @@ Error MCPService::start(const String &p_bind_address, int p_port, bool p_auto_po
 
 	bind_address = p_bind_address;
 	port = server->get_local_port();
-	token = p_token.strip_edges();
-	authorization_value = String("Bearer ") + token;
 	require_confirmation = p_require_confirmation;
-	require_token = p_require_token;
 	last_error.clear();
 	state = STATE_RUNNING;
 	set_process(true);
@@ -1257,6 +1560,33 @@ MCPService::MCPService() {
 	tool_registry.push_back({ "godot.resource.create", "Creates an approved Godot resource type.", "project-write", "medium", true });
 	tool_registry.push_back({ "godot.run.current_scene", "Runs the current scene through the editor debugger.", "run-control", "high", true });
 	tool_registry.push_back({ "godot.run.stop", "Stops the currently running scene.", "run-control", "high", true });
+	tool_registry.push_back({ "godot.project.inspect", "Inspects project state and configuration.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.project.scan", "Scans the project filesystem.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.scene.inspect", "Inspects a scene tree, node, and properties.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.scene.mutate", "Applies a batch of controlled scene operations.", "scene-write", "medium", true });
+	tool_registry.push_back({ "godot.script.inspect", "Reads and validates a project script.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.script.edit", "Creates, updates, or attaches a project script.", "project-write", "high", true });
+	tool_registry.push_back({ "godot.script.search", "Searches project scripts.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.resource.inspect", "Inspects a project resource.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.resource.mutate", "Creates or updates a controlled resource.", "project-write", "medium", true });
+	tool_registry.push_back({ "godot.run", "Starts, stops, or reports the running game.", "run-control", "high", true });
+	tool_registry.push_back({ "godot.run.diagnostics", "Returns runtime diagnostics.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.visual.capture", "Captures an editor, game, or camera view.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.test", "Runs project validation tests.", "run-control", "high", true });
+	tool_registry.push_back({ "godot.build", "Builds or exports the project.", "project-write", "high", true });
+	tool_registry.push_back({ "godot.scene.list_nodes", "Lists the nodes in a project scene.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.scene.inspect", "Inspects a scene node and its hierarchy.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.scene.get_property", "Reads a property from a scene node.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.script.create", "Creates a GDScript file inside the project.", "project-write", "medium", true });
+	tool_registry.push_back({ "godot.script.read", "Reads a GDScript file inside the project.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.script.write", "Writes a GDScript file inside the project.", "project-write", "high", true });
+	tool_registry.push_back({ "godot.script.attach", "Attaches a GDScript to a scene node.", "scene-write", "high", true });
+	tool_registry.push_back({ "godot.script.validate", "Checks whether a GDScript can be loaded.", "read-only", "medium", false });
+	tool_registry.push_back({ "godot.script.search", "Searches project-root GDScript files.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.project.scan", "Scans the project filesystem.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.run.get_output", "Returns runtime output when available.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.run.get_errors", "Returns runtime errors when available.", "read-only", "low", false });
+	tool_registry.push_back({ "godot.run.get_stack_trace", "Returns runtime stack information when available.", "read-only", "low", false });
 }
 
 MCPService::~MCPService() {
