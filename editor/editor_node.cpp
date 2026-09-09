@@ -7236,8 +7236,13 @@ void EditorNode::reload_scene(const String &p_path) {
 		return;
 	}
 
-	// Adjust index so tab is back a the previous position.
+	// Adjust index so tab is back at the previous position.
 	editor_data.move_scene_to_index(editor_data.get_edited_scene_count() - 1, scene_idx);
+
+	// The scene was loaded from its current on-disk state. Keep the external
+	// modification baseline in sync so the periodic filesystem watcher does not
+	// immediately report the freshly reloaded scene as changed again.
+	editor_data.set_scene_modified_time(scene_idx, FileAccess::get_modified_time(lpath));
 	EditorUndoRedoManager::get_singleton()->clear_history(editor_data.get_scene_history_id(scene_idx), false);
 
 	// Recover the current tab.
