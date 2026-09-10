@@ -17,7 +17,7 @@ summary: 快速定位 Godot 引擎源码模块、文件职责和关键 API，并
 ## 知识库入口
 
 ```text
-user_temp/godot-knowledge/README.md
+<engine-source-root>/user_temp/godot-knowledge/README.md
 ```
 
 根据任务读取：
@@ -33,13 +33,13 @@ user_temp/godot-knowledge/README.md
 
 ## 源码根目录
 
-当前环境的源码根目录是：
+源码根目录必须由用户或当前开发环境明确提供。
 
 ```text
-D:\Program Files\godot
+<engine-source-root>
 ```
 
-在其他机器不要假定这个绝对路径；先确认源码根目录，再使用相对路径。
+不要在 Skill 中假定本机绝对路径；确认源码根目录后，再使用相对路径。
 
 ## 快速定位流程
 

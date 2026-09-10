@@ -29,21 +29,13 @@ godot.build
 
 | 能力分类 | MCP 工具 | 状态 |
 |---|---|---|
-| 编辑器状态 | `godot.editor.status` | 已有 |
-| 场景打开 | `godot.editor.open_scene` | 已有 |
-| 场景创建 | `godot.scene.create` | 已有；Control Center 显示状态需要与服务注册保持同步 |
-| 节点操作 | `godot.scene.add_node`、`remove_node`、`rename_node`、`reparent_node` | 已有 |
-| 3D 节点 | `godot.scene.add_3d_node` | 已有 |
-| 变换修改 | `godot.scene.set_transform` | 已有 |
-| 受控属性修改 | `godot.scene.set_property` | 已有；使用白名单 |
-| 基础网格 | `godot.scene.set_mesh` | 已有 |
-| 基础材质 | `godot.scene.set_material` | 已有；目前主要面向 StandardMaterial3D 基础颜色 |
-| 资源创建 | `godot.resource.create` | 已有；受控资源类型 |
-| 主场景设置 | `godot.project.set_main_scene` | 已有 |
-| 运行控制 | `godot.run.current_scene`、`godot.run.stop` | 已有 |
-| 编辑器截图 | `godot.capture.editor_view` | 已有 |
-| 运行视图截图 | `godot.run.capture_view` | 已有 |
-| Camera3D Buffer 截图 | `godot.run.capture_camera_view` | 已有；用于实际游戏画面验证 |
+| 编辑器/项目状态 | `godot.project.inspect` | 已有 |
+| 场景检查 | `godot.scene.inspect` | 已有 |
+| 场景创建和修改 | `godot.scene.mutate` | 已有；通过 operations 批处理 |
+| 3D 节点、变换、网格和材质 | `godot.scene.mutate` | 已有；使用 action 区分 |
+| 资源创建和修改 | `godot.resource.mutate` | 已有；受控资源类型 |
+| 运行控制 | `godot.run` | 已有；通过 action=start/stop/status |
+| 统一视觉截图 | `godot.visual.capture` | 已有；通过 source=camera/editor/game |
 | 事务 | `godot.transaction.begin`、`commit`、`rollback` | 已有 |
 | 写入确认 | `godot.confirmation.approve`、`reject` | 已有 |
 | 审计 | `godot.audit.clear`、`export` | 已有 |
@@ -182,25 +174,18 @@ godot.build
 ### 第一批：最小可用游戏开发闭环
 
 ```text
-godot.scene.list_nodes
+godot.project.inspect
+godot.project.scan
 godot.scene.inspect
-godot.scene.get_property
-godot.scene.set_property
-
-godot.script.create
-godot.script.read
-godot.script.write
-godot.script.attach
-godot.script.validate
-
-godot.run.current_scene
-godot.run.stop
-godot.run.get_output
-godot.run.get_errors
-godot.run.get_stack_trace
-
-godot.project.get_setting
-godot.project.set_setting
+godot.scene.mutate
+godot.script.inspect
+godot.script.edit
+godot.script.search
+godot.run
+godot.run.diagnostics
+godot.visual.capture
+godot.test
+godot.build
 ```
 
 完成后，Agent 可以：

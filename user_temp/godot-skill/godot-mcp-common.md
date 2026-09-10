@@ -112,7 +112,7 @@ Headers：none
 
 如果引擎源码或编辑器二进制刚刚修改过，才需要先重新构建；仅调整场景时不需要重新编译引擎或重启编辑器。
 
-启动后调用 `tools/list` 和 `godot.editor.status`，以返回值确认 MCP 服务的实际 Endpoint、绑定地址和端口，不要从 Skill 中推测这些值。
+启动后调用 `tools/list`，并使用实际公开的项目状态工具（如果当前服务提供）确认 MCP 服务状态、Endpoint、绑定地址和端口；不要从 Skill 中推测工具名或连接值。
 
 ## 认证
 
@@ -152,36 +152,30 @@ Agent 连接后必须按以下顺序判断：
 tools/list
 ```
 
-确认响应是 JSON-RPC 成功响应，并且工具列表包含至少：
+确认响应是 JSON-RPC 成功响应，并以实际列表和 Schema 为准。新版公开工具至少应包含：
 
 ```text
-godot.editor.status
-godot.scene.set_transform
-godot.run.current_scene
-godot.run.capture_camera_view
+godot.project.inspect
+godot.scene.inspect
+godot.scene.mutate
+godot.resource.mutate
+godot.run
+godot.visual.capture
 ```
 
-如果需要 3D 场景能力，还应包含：
-
-```text
-godot.project.set_main_scene
-godot.editor.open_scene
-godot.scene.add_3d_node
-godot.scene.set_mesh
-godot.scene.set_material
-godot.scene.set_property
-godot.run.stop
-```
+旧版的 `godot.scene.add_3d_node`、`godot.scene.set_mesh`、`godot.scene.set_material`、`godot.scene.set_transform` 不要求出现在列表中；它们是隐藏兼容 RPC。
 
 ### 2. 服务状态
 
-调用：
+调用公开项目状态工具：
 
 ```text
 tools/call
-name = godot.editor.status
+name = godot.project.inspect
 arguments = {}
 ```
+
+如果当前服务仍提供旧的状态兼容 RPC，也可以用于诊断，但不要求它出现在公开工具列表中。
 
 期望结果：
 
@@ -233,7 +227,7 @@ Headers: none
   "id": 1,
   "method": "tools/call",
   "params": {
-    "name": "godot.editor.status",
+    "name": "godot.project.inspect",
     "arguments": {}
   }
 }
@@ -246,23 +240,24 @@ Headers: none
 连接成功不等于场景任务可以立即执行。开始场景任务前还要确认：
 
 ```text
-godot.editor.status.state = running
+godot.project.inspect 返回成功，且 tools/list 包含目标工具
 tools/list 包含目标工具
 Godot 编辑器项目已打开
 ```
 
-对于 3D 场景任务，还应按以下顺序使用：
+对于新版 3D 场景任务，还应按以下顺序使用：
 
 ```text
-godot.editor.open_scene
-godot.project.set_main_scene
-godot.run.current_scene
-godot.run.capture_camera_view
+godot.scene.inspect
+godot.scene.mutate
+godot.run (action=start)
+godot.visual.capture (source=camera)
+godot.run (action=stop)
 ```
 
-`godot.run.capture_camera_view` 是实际游戏 Camera3D Buffer 截图工具。它返回 `capture_requested: true` 时，表示截图请求已提交，不代表 PNG 已经生成；Agent 必须等待目标 `user://*.png` 文件生成后再读取并进行视觉判断。
+`godot.visual.capture` 使用 `source=camera` 时是实际游戏 Camera3D Buffer 截图工具。若返回截图请求已提交状态，表示请求已提交，不代表 PNG 已经生成；Agent 必须等待目标 `user://*.png` 文件生成后再读取并进行视觉判断。
 
-不要使用 `godot.run.capture_view` 作为 3D 视觉验收的主要工具，因为它可能捕获编辑器或嵌入式运行容器外层画面。
+不要使用 `source=editor` 作为 3D 视觉验收的主要工具，因为它捕获的是编辑器界面。
 
 ## 常见错误判断
 
@@ -273,7 +268,49 @@ godot.run.capture_camera_view
 Tool is not available
 ```
 
-处理：重新调用 `tools/list`，确认 MCP Server 二进制版本和工具注册是否为最新。如果工具是在修改 C++ 后新增的，需要重新编译引擎并重启 Godot；仅修改场景不需要编译。
+处理：重新调用 `tools/list`，确认 MCP Server 二进制版本和工具注册是否为最新。如果旧版细粒度工具不在列表中，先使用新版聚合工具，不要误判为服务损坏。只有在修改 C++ 后新增了新能力时，才需要重新编译引擎并重启 Godot；仅修改场景不需要编译。
+
+### `godot.scene.mutate` 返回 `Unsupported scene operation`
+
+检查：
+
+1. `action` 只写 operation 名，不写完整工具名；
+2. 例如正确写 `add_3d_node`，错误写 `godot.scene.add_3d_node`；
+3. 重新调用 `tools/list` 读取当前 Schema；
+4. 外层提供 `scene_path`，每个 operation 提供自己的节点参数；
+5. 当前新版支持：
+
+```text
+add_node
+add_3d_node
+remove_node
+rename_node
+reparent_node
+set_transform
+set_property
+set_mesh
+set_material
+```
+
+`set_material` 支持 `color`、`metallic` 和 `roughness`，其中 `metallic`/`roughness` 范围为 0.0 到 1.0。
+
+示例：
+
+```json
+{
+  "scene_path": "res://<scene>.tscn",
+  "operations": [
+    {
+      "action": "add_3d_node",
+      "parent_path": ".",
+      "node_type": "MeshInstance3D",
+      "node_name": "PBR_Sphere_01"
+    }
+  ]
+}
+```
+
+`set_transform` 的 `position`、`rotation_degrees`、`scale` 都必须是三个数值的数组。多个 operation 可以放在同一个 `operations` 数组中，服务按顺序执行并返回 `operation_count` 和 `results`。
 
 ### 需要确认
 
@@ -306,13 +343,13 @@ godot.confirmation.approve
 不要把截图当作场景失败。先确认：
 
 ```text
-godot.run.current_scene 已成功
+godot.run (action=start) 已成功
 已等待几帧
-使用的是 godot.run.capture_camera_view
+使用的是 godot.visual.capture，source=camera
 目标 Camera3D 路径正确
 ```
 
-`capture_camera_view` 仍返回 `capture_requested` 时，等待 PNG 生成后读取；不要立即读取旧截图文件。
+如果 camera 截图返回请求已提交状态，等待 PNG 生成后读取；不要立即读取旧截图文件。
 
 ### 服务重启或连接中断
 
@@ -320,7 +357,7 @@ godot.run.current_scene 已成功
 
 1. 重新建立 HTTP MCP 连接；
 3. 再次调用 `tools/list`；
-4. 再次调用 `godot.editor.status`；
+4. 再次调用 `godot.project.inspect`，或调用当前服务实际提供的状态兼容 RPC；
 5. 不要假设旧事务、旧确认或旧连接仍然有效。
 
 ## 安全规则

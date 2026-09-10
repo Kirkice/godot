@@ -198,7 +198,9 @@ Array MCPService::_get_tools() const {
 		Dictionary tool;
 		tool["name"] = definition.name;
 		tool["description"] = definition.description;
-		Dictionary schema = input_schema;
+		Dictionary schema;
+		schema["type"] = "object";
+		schema["additionalProperties"] = false;
 		Dictionary properties;
 		if (definition.name == "godot.scene.inspect") {
 			Dictionary scene_path; scene_path["type"] = "string";
@@ -207,7 +209,21 @@ Array MCPService::_get_tools() const {
 			properties["scene_path"] = scene_path; properties["node_path"] = node_path; properties["recursive"] = recursive;
 		} else if (definition.name == "godot.scene.mutate") {
 			Dictionary scene_path; scene_path["type"] = "string";
-			Dictionary operations; operations["type"] = "array";
+			Dictionary operation_item; operation_item["type"] = "object";
+			Dictionary operation_properties;
+			Dictionary operation_action; operation_action["type"] = "string"; Array operation_actions; operation_actions.push_back("add_node"); operation_actions.push_back("add_3d_node"); operation_actions.push_back("remove_node"); operation_actions.push_back("rename_node"); operation_actions.push_back("reparent_node"); operation_actions.push_back("set_transform"); operation_actions.push_back("set_property"); operation_actions.push_back("set_mesh"); operation_actions.push_back("set_material"); operation_action["enum"] = operation_actions; operation_properties["action"] = operation_action;
+			Dictionary node_type; node_type["type"] = "string"; operation_properties["node_type"] = node_type;
+			Dictionary node_name; node_name["type"] = "string"; operation_properties["node_name"] = node_name;
+			Dictionary parent_path; parent_path["type"] = "string"; operation_properties["parent_path"] = parent_path;
+			Dictionary node_path; node_path["type"] = "string"; operation_properties["node_path"] = node_path;
+			Dictionary color; color["type"] = "array"; operation_properties["color"] = color;
+			Dictionary metallic; metallic["type"] = "number"; metallic["minimum"] = 0.0; metallic["maximum"] = 1.0; operation_properties["metallic"] = metallic;
+			Dictionary roughness; roughness["type"] = "number"; roughness["minimum"] = 0.0; roughness["maximum"] = 1.0; operation_properties["roughness"] = roughness;
+			Dictionary position; position["type"] = "array"; operation_properties["position"] = position;
+			Dictionary rotation_degrees; rotation_degrees["type"] = "array"; operation_properties["rotation_degrees"] = rotation_degrees;
+			Dictionary scale; scale["type"] = "array"; operation_properties["scale"] = scale;
+			operation_item["properties"] = operation_properties; operation_item["additionalProperties"] = true;
+			Dictionary operations; operations["type"] = "array"; operations["items"] = operation_item; operations["minItems"] = 1;
 			properties["scene_path"] = scene_path; properties["operations"] = operations;
 		} else if (definition.name == "godot.script.inspect") {
 			Dictionary path; path["type"] = "string"; properties["script_path"] = path;
@@ -215,12 +231,8 @@ Array MCPService::_get_tools() const {
 			Dictionary action; action["type"] = "string"; Array action_enum; action_enum.push_back("create"); action_enum.push_back("update"); action_enum.push_back("attach"); action["enum"] = action_enum;
 			Dictionary path; path["type"] = "string"; Dictionary content; content["type"] = "string";
 			properties["action"] = action; properties["script_path"] = path; properties["content"] = content;
-		} else if (definition.name == "godot.script.search") {
-			Dictionary query; query["type"] = "string"; properties["query"] = query;
 		} else if (definition.name == "godot.run") {
 			Dictionary action; action["type"] = "string"; Array action_enum; action_enum.push_back("start"); action_enum.push_back("stop"); action_enum.push_back("status"); action["enum"] = action_enum; properties["action"] = action;
-		} else if (definition.name == "godot.script.search") {
-			Dictionary query; query["type"] = "string"; properties["query"] = query;
 		} else if (definition.name == "godot.resource.inspect" || definition.name == "godot.resource.mutate") {
 			Dictionary path; path["type"] = "string"; properties["resource_path"] = path;
 			Dictionary resource_type; resource_type["type"] = "string"; properties["resource_type"] = resource_type;
@@ -515,6 +527,7 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			const String action = operation.get("action", "");
 			String legacy_name;
 			if (action == "add_node") legacy_name = "godot.scene.add_node";
+			else if (action == "add_3d_node") legacy_name = "godot.scene.add_3d_node";
 			else if (action == "remove_node") legacy_name = "godot.scene.remove_node";
 			else if (action == "rename_node") legacy_name = "godot.scene.rename_node";
 			else if (action == "reparent_node") legacy_name = "godot.scene.reparent_node";
@@ -533,6 +546,20 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			Array results;
 			for (int operation_index = 0; operation_index < operations.size(); operation_index++) {
 				Dictionary current = operations[operation_index];
+				if (arguments.has("scene_path")) current["scene_path"] = arguments["scene_path"];
+				const String current_action = current.get("action", "");
+				String current_legacy_name;
+				if (current_action == "add_node") current_legacy_name = "godot.scene.add_node";
+				else if (current_action == "add_3d_node") current_legacy_name = "godot.scene.add_3d_node";
+				else if (current_action == "remove_node") current_legacy_name = "godot.scene.remove_node";
+				else if (current_action == "rename_node") current_legacy_name = "godot.scene.rename_node";
+				else if (current_action == "reparent_node") current_legacy_name = "godot.scene.reparent_node";
+				else if (current_action == "set_transform") current_legacy_name = "godot.scene.set_transform";
+				else if (current_action == "set_property") current_legacy_name = "godot.scene.set_property";
+				else if (current_action == "set_mesh") current_legacy_name = "godot.scene.set_mesh";
+				else if (current_action == "set_material") current_legacy_name = "godot.scene.set_material";
+				else return _make_error(request_id, -32602, "Unsupported scene operation.");
+				forwarded["name"] = current_legacy_name;
 				forwarded["arguments"] = current;
 				request_copy["params"] = forwarded;
 				Dictionary operation_response = _handle_rpc(request_copy);
@@ -846,9 +873,11 @@ Dictionary MCPService::_handle_rpc(const Dictionary &p_request) {
 			const Dictionary arguments = params.get("arguments", Dictionary()); const String scene_path = arguments.get("scene_path", ""); const String node_path = arguments.get("node_path", ""); const Variant color_value = arguments.get("color", Array());
 			if (!scene_path.begins_with("res://") || scene_path.get_extension() != "tscn" || node_path.is_empty()) return _make_error(request_id, -32602, "Material assignment arguments are invalid.");
 			Array components = color_value; if (components.size() != 3 && components.size() != 4) return _make_error(request_id, -32602, "Material color must contain 3 or 4 components.");
+			const float metallic = CLAMP((float)arguments.get("metallic", 0.0), 0.0f, 1.0f);
+			const float roughness = CLAMP((float)arguments.get("roughness", 0.5), 0.0f, 1.0f);
 			Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path); if (packed_scene.is_null()) return _make_error(request_id, -32033, "Scene could not be loaded."); Node *root = packed_scene->instantiate(); MeshInstance3D *node = Object::cast_to<MeshInstance3D>(root->get_node_or_null(NodePath(node_path))); if (node == nullptr) { memdelete(root); return _make_error(request_id, -32034, "MeshInstance3D node was not found."); }
-			Ref<StandardMaterial3D> material; material.instantiate(); material->set_albedo(Color((float)components[0], (float)components[1], (float)components[2], components.size() == 4 ? (float)components[3] : 1.0f)); node->set_material_override(material);
-			Ref<PackedScene> updated; updated.instantiate(); updated->pack(root); memdelete(root); if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved."); _track_transaction_file(scene_path); _refresh_scene_after_mutation(scene_path); _append_audit(name, "updated", scene_path); Dictionary result; result["updated"] = true; Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
+			Ref<StandardMaterial3D> material; material.instantiate(); material->set_albedo(Color((float)components[0], (float)components[1], (float)components[2], components.size() == 4 ? (float)components[3] : 1.0f)); material->set_metallic(metallic); material->set_roughness(roughness); node->set_material_override(material);
+			Ref<PackedScene> updated; updated.instantiate(); updated->pack(root); memdelete(root); if (ResourceSaver::save(updated, scene_path) != OK) return _make_error(request_id, -32030, "Scene could not be saved."); _track_transaction_file(scene_path); _refresh_scene_after_mutation(scene_path); _append_audit(name, "updated", scene_path); Dictionary result; result["updated"] = true; result["metallic"] = metallic; result["roughness"] = roughness; Dictionary response; response["jsonrpc"] = jsonrpc_version(); response["id"] = request_id; response["result"] = result; return response;
 		}
 		if (name == "godot.project.set_main_scene") {
 			const Dictionary arguments = params.get("arguments", Dictionary());
